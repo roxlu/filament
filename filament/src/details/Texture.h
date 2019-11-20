@@ -98,6 +98,7 @@ public:
     static inline uint8_t maxLevelCount(uint32_t maxDimension) noexcept {
         return std::max(1, std::ilogbf(maxDimension) + 1);
     }
+ 
 
     // Returns the max number of levels for a texture of given dimensions
     static inline uint8_t maxLevelCount(uint32_t width, uint32_t height) noexcept {
