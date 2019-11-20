@@ -48,7 +48,8 @@ public:
     Sampler getTarget() const noexcept { return mTarget; }
     InternalFormat getFormat() const noexcept { return mFormat; }
     Usage getUsage() const noexcept { return mUsage; }
-
+    void getId(FEngine& engine, void* result);
+  
     void setImage(FEngine& engine, size_t level,
             uint32_t xoffset, uint32_t yoffset, uint32_t width, uint32_t height,
             PixelBufferDescriptor&& buffer) const noexcept;
@@ -103,6 +104,7 @@ public:
     static inline uint8_t maxLevelCount(uint32_t width, uint32_t height) noexcept {
         return std::max(1, std::ilogbf(std::max(width, height)) + 1);
     }
+ 
 
 private:
     friend class Texture;
