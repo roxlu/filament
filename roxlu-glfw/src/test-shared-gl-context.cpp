@@ -6,6 +6,13 @@
 #include <thread>
 #include <sstream>
 
+#include <filament/Engine.h>
+#include <filament/Scene.h>
+#include <filament/View.h>
+#include <filament/Renderer.h>
+
+#include <glad/glad.h>
+
 #define GLFW_EXPOSE_NATIVE_WGL
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3.h>
@@ -13,11 +20,6 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-
-#include <filament/Engine.h>
-#include <filament/Scene.h>
-#include <filament/View.h>
-#include <filament/Renderer.h>
 
 typedef HGLRC (WINAPI * PFNWGLCREATECONTEXTATTRIBSARBPROC) (HDC hDC, HGLRC hShareContext, const int *attribList);
 
@@ -80,6 +82,9 @@ int main(int argc, char* argv[]) {
   glfwMakeContextCurrent(win);
   glfwSwapInterval(1);
 
+  if (0 == gladLoadGL()) {
+    printf("Failed to load glad ... (exiting).\n");
+  }
   printf("! glfw is using GL_VENDOR: %s\n", (const char*)glGetString(GL_VENDOR));
   printf("! glfw is using GL_RENDERER: %s\n", (const char*)glGetString(GL_RENDERER));
 
@@ -158,7 +163,7 @@ int main(int argc, char* argv[]) {
 
   view->setCamera(cam);
   view->setScene(scene);
-  view->setViewport({0, 0, win_w, win_h});
+  view->setViewport({0, (int32_t)(win_h * 0.5), win_w, (uint32_t)(win_h * 0.5)});
   view->setClearColor({1.0f, 1.0f, 0.0f, 1.0f});
 
   printf("! glfw ready.\n");
@@ -169,14 +174,13 @@ int main(int argc, char* argv[]) {
 
   /* Our main render loop. */
   while(!glfwWindowShouldClose(win)) {
-    
-    //glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    /*
-    glViewport(0, 0, win_w, win_h);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, win_w, win_h * 0.5);
     glClearColor(0.13f, 0.13f, 0.13f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    */
+
     if (ren->beginFrame(swap)) {
       ren->render(view);
       ren->endFrame();

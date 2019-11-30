@@ -63,6 +63,7 @@ cmake -G "Visual Studio 16 2019" ^
       -A X64 ^
       -DCMAKE_INSTALL_PREFIX="%id%" ^
       -DCMAKE_BUILD_TYPE="Release" ^
+      -DCMAKE_VERBOSE_MAKEFILE=On ^
       ../                                      
 
 if errorlevel 1 (

@@ -7,10 +7,12 @@ set(sd ${bd}/src)                  # source directory for the test
 set(fd ${bd}/../roxlu-installed)   # filament install directory.
 set(ld ${fd}/lib/x86_64/)          # filament lib dir
 set(fb ${bd}/../roxlu-build)       # filament build dir
+set(ed ${bd}/extern)
 
 include_directories(
   ${fd}/include
   ${id}/include
+  ${ed}/glad/include
   )
 
 
@@ -50,8 +52,11 @@ list(APPEND roxlu_libs
   gdi32.lib
   )
 
+add_library(myloader STATIC ${ed}/glad/src/glad.c)
+list(APPEND roxlu_libs myloader)
+
 set(test_name test-shared-gl-context)
-add_executable(${test_name} ${sd}/test-shared-gl-context.cpp)
+add_executable(${test_name} ${sd}/test-shared-gl-context.cpp) #  ${ed}/glad/src/glad.c)
 set_property(TARGET ${test_name} PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
 set_property(TARGET ${test_name} APPEND_STRING PROPERTY LINK_FLAGS "/force:multiple") # fixes duplicate symbols issue (bluegl<>opengl32), https://github.com/google/filament/issues/652
 target_link_libraries(${test_name} ${roxlu_libs})

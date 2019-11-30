@@ -308,6 +308,9 @@ namespace filament {
   }
 
   Platform::SwapChain* PlatformWGL::createSwapChain(void* nativeWindow, uint64_t& flags) noexcept {
+
+    printf("--- createSwapChain on nativeWindow: %p, with flags: %llu.\n", nativeWindow, flags);
+    
     // on Windows, the nativeWindow maps to a HWND
     HDC hdc = GetDC((HWND) nativeWindow);
     if (!ASSERT_POSTCONDITION_NON_FATAL(hdc,
@@ -317,7 +320,9 @@ namespace filament {
 
     // We have to match pixel formats across the HDC and HGLRC (mContext)
     int pixelFormat = ChoosePixelFormat(hdc, &mPfd);
-    SetPixelFormat(hdc, pixelFormat, &mPfd);
+    if (0 == SetPixelFormat(hdc, pixelFormat, &mPfd)) {
+      printf("--- failed to set the pixel format in createSwapChain. \n");
+    }
 
     SwapChain* swapChain = (SwapChain*) hdc;
     return swapChain;
