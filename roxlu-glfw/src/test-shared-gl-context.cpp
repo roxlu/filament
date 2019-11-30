@@ -1,7 +1,10 @@
-
-#include <windows.h>
+//#include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#include <mutex>
+#include <thread>
+#include <sstream>
 
 #define GLFW_EXPOSE_NATIVE_WGL
 #define GLFW_EXPOSE_NATIVE_WIN32
@@ -12,12 +15,11 @@
 #include <windows.h>
 
 #include <filament/Engine.h>
-//#include <filament/LightManager.h>
-//#include <filament/RenderableManager.h>
 #include <filament/Scene.h>
-//#include <filament/TransformManager.h>
 #include <filament/View.h>
 #include <filament/Renderer.h>
+
+typedef HGLRC (WINAPI * PFNWGLCREATECONTEXTATTRIBSARBPROC) (HDC hDC, HGLRC hShareContext, const int *attribList);
 
 /* -------------------------------------------- */
 
@@ -31,12 +33,12 @@ void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
 
 /* -------------------------------------------- */
 
-int win_h = 1024;
-int win_w = 768;
+uint32_t win_h = 1024;
+uint32_t win_w = 768;
 
 /* -------------------------------------------- */
 
-#define USE_GL 0
+#define USE_GL 1
 
 /* -------------------------------------------- */
   
@@ -51,11 +53,11 @@ int main(int argc, char* argv[]) {
     exit(EXIT_FAILURE);
   }
 
-  glfwWindowHint(GLFW_SAMPLES, 4);
+  glfwWindowHint(GLFW_SAMPLES, 0);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
-  glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-  glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+  /* glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE); */ /* Do we need this? */
+  /* glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE); */
   glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
   glfwWindowHint(GLFW_DECORATED, GL_TRUE);
 
@@ -78,7 +80,16 @@ int main(int argc, char* argv[]) {
   glfwMakeContextCurrent(win);
   glfwSwapInterval(1);
 
+  printf("! glfw is using GL_VENDOR: %s\n", (const char*)glGetString(GL_VENDOR));
+  printf("! glfw is using GL_RENDERER: %s\n", (const char*)glGetString(GL_RENDERER));
+
+  std::ostringstream oss;
+  oss << std::this_thread::get_id();
+  std::string thread_id = oss.str();
+  printf("! glfw thread id: %s\n", thread_id.c_str());
+  
   HWND win_hwnd = glfwGetWin32Window(win);
+  printf("! glfw hwnd: %p\n", win_hwnd);
 
 #if 0 != USE_GL
   /* Get the pixel format that has been selected by GLFW */
@@ -94,14 +105,26 @@ int main(int argc, char* argv[]) {
     exit(EXIT_FAILURE);
   }
 
-  printf("- win_pix_fmt: %d.\n", win_pix_fmt);
+  printf("! win_pix_fmt: %d.\n", win_pix_fmt);
 #endif
-  
+
+  /*
+  PFNWGLCREATECONTEXTATTRIBSARBPROC wglCreateContextAttribsRoxlu = (PFNWGLCREATECONTEXTATTRIBSARBPROC) wglGetProcAddress("wglCreateContextAttribsARB");
+  if (nullptr == wglCreateContextAttribsRoxlu) {
+    printf("Failed to get wglCreateContextAttribs(). (exiting).\n");
+    exit(EXIT_FAILURE);
+  }
+  */
+
+  std::mutex mut;
+  mut.lock();
   filament::Engine* engine = filament::Engine::create();
   if (nullptr == engine) {
     printf("Failed to create the filament::Engine. (exiting).\n");
     exit(EXIT_FAILURE);
   }
+  mut.unlock();
+  printf("...\n");
 
   filament::SwapChain* swap = engine->createSwapChain(win_hwnd);
   if (nullptr == swap) {
@@ -135,15 +158,13 @@ int main(int argc, char* argv[]) {
 
   view->setCamera(cam);
   view->setScene(scene);
-  
-  /* 
-    Engine* engine = Engine::create();
-    SwapChain* swapChain = engine->createSwapChain(nativeWindow);
-    Renderer* renderer = engine->createRenderer();
-   */
+  view->setViewport({0, 0, win_w, win_h});
+  view->setClearColor({1.0f, 1.0f, 0.0f, 1.0f});
+
+  printf("! glfw ready.\n");
   
   /* @todo load GL functions. */
-
+  //  return 0;
   /* -------------------------------------------------------------------- */
 
   /* Our main render loop. */
@@ -157,7 +178,6 @@ int main(int argc, char* argv[]) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     */
     if (ren->beginFrame(swap)) {
-      // for each View
       ren->render(view);
       ren->endFrame();
     }

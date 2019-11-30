@@ -22,7 +22,7 @@ if not exist "%ed%/glfw" (
    
    mkdir build
    cd build
-   
+
    cmake -G "Visual Studio 16 2019" ^
          -A X64 ^
          -DCMAKE_INSTALL_PREFIX="%id%" ^
@@ -41,6 +41,20 @@ if not exist "%ed%/glfw" (
      echo "Failed to build GLFW"
      exit
   )
+)
+
+if not exist "%pwd%/../roxlu-installed" (
+   echo "The Filament install dir does not exist. Did you compile filament?"
+   exit
+)
+
+:: Rebuild the backend target as that's what we need when making
+:: changes to the GL backend.
+cd "%pwd%/../roxlu-build"
+cmake --build . --target "backend" --config "Release"
+if errorlevel 1 (
+  echo "Failed to build Filament."
+  exit 
 )
 
 :: Building with VS2019
