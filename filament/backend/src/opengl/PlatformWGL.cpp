@@ -78,6 +78,7 @@ namespace filament {
 
   Driver* PlatformWGL::createDriver(void* const sharedGLContext) noexcept {
 
+#if 0
     /* --------------------------------------------------------------------------- */
     /*
       The code below tries to retrieve the pixel format from the
@@ -193,9 +194,10 @@ namespace filament {
     int result = bluegl::bind();
     ASSERT_POSTCONDITION(!result, "Unable to load OpenGL entry points.");
     return OpenGLDriverFactory::create(this, sharedGLContext);
-    
+
+#endif    
     /* --------------------------------------------------------------------------- */
-#if 0
+#if 1
     mPfd = {
       sizeof(PIXELFORMATDESCRIPTOR),
       1,
