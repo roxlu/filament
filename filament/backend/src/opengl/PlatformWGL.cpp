@@ -180,6 +180,12 @@ namespace filament {
       0
     };
 
+    /* 
+       It doesn't make a different (or doesnt result in an
+       error), when I use the dummy_hdc or the curr_hdc when
+       calling `wglCreateContextAttribsARB() and
+       wglMakeCurrent()`.
+    */
     mContext = wglCreateContextAttribsRoxlu(curr_hdc, (HGLRC)sharedGLContext, attribs_roxlu);
     if (nullptr == mContext) {
       printf("Failed to create GL context. (exiting).\n");
