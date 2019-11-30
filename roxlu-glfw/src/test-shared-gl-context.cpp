@@ -131,7 +131,7 @@ int main(int argc, char* argv[]) {
     printf("Failed to create the filament::SwapChain. (exiting).\n");
     exit(EXIT_FAILURE);
   }
-
+  
   filament::Renderer* ren = engine->createRenderer();
   if (nullptr == ren) {
     printf("Failed to create the filament::Renderer. (exiting).\n");

@@ -78,7 +78,10 @@ namespace filament {
 
   Driver* PlatformWGL::createDriver(void* const sharedGLContext) noexcept {
 
-#if 0
+#define USE_ROXLU 1
+    
+#if USE_ROXLU == 1
+
     /* --------------------------------------------------------------------------- */
     /*
       The code below tries to retrieve the pixel format from the
@@ -96,7 +99,6 @@ namespace filament {
     HWND curr_hwnd = nullptr;
     curr_hwnd = GetActiveWindow(); /* returns nullptr. */
     curr_hwnd = GetForegroundWindow();  /* returns the correct window that has been created by GLFW */
-    printf("--- curr_wnd: %p\n", curr_hwnd);
  
     if (nullptr == curr_hwnd) {
       printf("Failed to get the current Window handle. (exiting). \n");
@@ -114,7 +116,7 @@ namespace filament {
       printf("Failed to get the current pixel format. (exiting).\n");
       exit(EXIT_FAILURE);
     }
-    printf("--- curr_pix: %d\n", curr_pix);
+
 
     /* 
        This function does not run it the main thread, which is
@@ -127,7 +129,6 @@ namespace filament {
     std::ostringstream oss;
     oss << std::this_thread::get_id();
     std::string thread_id = oss.str();
-    printf("--- thread id in filament: %s\n", thread_id.c_str());
 
     HWND dummy_hwnd = CreateWindowA("STATIC", "dummy", 0, 0, 0, 1, 1, NULL, NULL, NULL, NULL);
     if (nullptr == dummy_hwnd) {
@@ -148,8 +149,7 @@ namespace filament {
       printf("Failed to describe the pixel format. (exiting).\n");
       exit(EXIT_FAILURE);
     }
-    printf("--- dummy_desc_fmt: %d\n", dummy_desc_fmt);
-      
+
     if (FALSE == SetPixelFormat(dummy_hdc, curr_pix, &dummy_pix_fmt)) {
       printf("Failed to set the pixel format on the dummy hdc. (exiting).\n");
       exit(EXIT_FAILURE);
@@ -187,17 +187,25 @@ namespace filament {
     }
 
     wglMakeCurrent(curr_hdc, mContext);
+
+    printf("--- curr_wnd: %p\n", curr_hwnd);
+    printf("--- curr_pix: %d\n", curr_pix);
+    printf("--- thread id in filament: %s\n", thread_id.c_str());
+    printf("--- dummy_desc_fmt: %d\n", dummy_desc_fmt);
     printf("--- created GL context: %p\n", mContext);
-    printf("--- filament is using GL_VENDOR: %s\n", (const char*)glGetString(GL_VENDOR));
-    printf("--- filament is using GL_RENDERER: %s\n", (const char*)glGetString(GL_RENDERER));
+    printf("--- GL_VENDOR: %s\n", (const char*)glGetString(GL_VENDOR));
+    printf("--- GL_RENDERER: %s\n", (const char*)glGetString(GL_RENDERER));
 
     int result = bluegl::bind();
     ASSERT_POSTCONDITION(!result, "Unable to load OpenGL entry points.");
     return OpenGLDriverFactory::create(this, sharedGLContext);
 
-#endif    
+#endif
+    
     /* --------------------------------------------------------------------------- */
-#if 1
+    
+#if USE_ROXLU == 0
+
     mPfd = {
       sizeof(PIXELFORMATDESCRIPTOR),
       1,
@@ -330,6 +338,8 @@ namespace filament {
 
   void PlatformWGL::makeCurrent(Platform::SwapChain* drawSwapChain,
                                 Platform::SwapChain* readSwapChain) noexcept {
+
+    printf("--- makeCurrent()\n");
     ASSERT_PRECONDITION_NON_FATAL(drawSwapChain == readSwapChain,
                                   "PlatformWGL does not support distinct draw/read swap chains.");
     HDC hdc = (HDC)(drawSwapChain);
