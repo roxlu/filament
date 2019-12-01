@@ -117,7 +117,6 @@ namespace filament {
       exit(EXIT_FAILURE);
     }
 
-
     /* 
        This function does not run it the main thread, which is
        why we can't "reuse" the given shared context because we
@@ -199,8 +198,12 @@ namespace filament {
     printf("--- thread id in filament: %s\n", thread_id.c_str());
     printf("--- dummy_desc_fmt: %d\n", dummy_desc_fmt);
     printf("--- created GL context: %p\n", mContext);
+
+    /* This fails with `lld-link: error: glGetString was replaced` when compiling with Clang */
+    /*
     printf("--- GL_VENDOR: %s\n", (const char*)glGetString(GL_VENDOR));
     printf("--- GL_RENDERER: %s\n", (const char*)glGetString(GL_RENDERER));
+    */
 
     int result = bluegl::bind();
     ASSERT_POSTCONDITION(!result, "Unable to load OpenGL entry points.");
@@ -260,8 +263,11 @@ namespace filament {
       goto error;
     }
 
+    /* This fails with `lld-link: error: glGetString was replaced` when compiling with Clang */
+    /*
     printf("--- filament is using GL_VENDOR: %s\n", (const char*)glGetString(GL_VENDOR));
     printf("--- filament is using GL_RENDERER: %s\n", (const char*)glGetString(GL_RENDERER));
+    */
     
     PFNWGLCREATECONTEXTATTRIBSARBPROC wglCreateContextAttribs =
       (PFNWGLCREATECONTEXTATTRIBSARBPROC) wglGetProcAddress("wglCreateContextAttribsARB");
