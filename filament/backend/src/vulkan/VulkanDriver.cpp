@@ -964,6 +964,10 @@ void VulkanDriver::readStreamPixels(Handle<HwStream> sh, uint32_t x, uint32_t y,
     scheduleDestroy(std::move(p));
 }
 
+void VulkanDriver::getTextureId(Handle<HwTexture> th, void* result) {
+  printf("Get texture id in VulkanDriver::getTextureId.\n");
+}
+  
 void VulkanDriver::blit(TargetBufferFlags buffers,
         Handle<HwRenderTarget> dst, backend::Viewport dstRect,
         Handle<HwRenderTarget> src, backend::Viewport srcRect,
