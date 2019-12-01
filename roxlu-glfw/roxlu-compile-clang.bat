@@ -39,19 +39,13 @@ cmake -G "Ninja" ^
       -DCMAKE_VERBOSE_MAKEFILE=On ^
       ../..
       
-::cmake -G "Ninja" ^
-::      -DCMAKE_INSTALL_PREFIX="%id%" ^
-::      -DCMAKE_BUILD_TYPE="Release" ^
-::      -DCMAKE_VERBOSE_MAKEFILE=On ^
-::      ../                                      
-
 if errorlevel 1 (
    echo "Failed to configure."
    goto:end
 )
 
-cmake --build . --target install --config "Release"
-:: cmake --build . --config "Release"
+cmake --build . --target install --config "Release" --parallel 12
+
 if errorlevel 1 (
    echo "Failed to build."
    goto:end     

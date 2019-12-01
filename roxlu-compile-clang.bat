@@ -1,8 +1,8 @@
 @echo off
-set pwd="%CD%"
-set base_dir="%pwd%/roxlu-clang"
-set build_dir="%base_dir%/build"
-set install_dir="%base_dir%/installed"
+set pwd=%CD%
+set base_dir=%pwd%/roxlu-clang
+set build_dir=%base_dir%/build
+set install_dir=%base_dir%/installed
 
 if not exist "%base_dir%" (
    mkdir "%base_dir%"
@@ -27,6 +27,6 @@ if errorlevel 1 (
    exit
 )
 
-cmake --build . --target install --config "Release" -- -j 12
+cmake --build . --target install --config "Release" --parallel 12
 
 cd "%pwd%"
