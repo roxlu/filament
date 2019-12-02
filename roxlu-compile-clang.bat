@@ -3,10 +3,32 @@ set pwd=%CD%
 set base_dir=%pwd%/roxlu-clang
 set build_dir=%base_dir%/build
 set install_dir=%base_dir%/installed
+set runtime=mt
+set static_flag=On
+
+:: Iterate over command line arguments
+:argsloop
+
+  if "%1" == "" (
+    goto :argsloopdone
+  )
+
+  if "%1" == "md" (
+    set runtime=md
+    set static_flag=Off
+  )
+  
+echo %1
+shift
+goto :argsloop
+:argsloopdone
 
 if not exist "%base_dir%" (
    mkdir "%base_dir%"
 )
+
+set build_dir=%build_dir%-%runtime%
+set install_dir=%install_dir%-%runtime%
 
 if not exist "%build_dir%" (
    mkdir "%build_dir%"
@@ -20,8 +42,8 @@ cmake -G "Ninja" ^
       -DCMAKE_LINKER:PATH="C:\Program Files\LLVM\bin\lld-link.exe" ^
       -DCMAKE_INSTALL_PREFIX="%install_dir%" ^
       -DCMAKE_BUILD_TYPE="Release" ^
-      -DUSE_STATIC_CRT=Off ^
       -DENABLE_JAVA=Off ^
+      -DUSE_STATIC_CRT=%static_flag% ^
       ../..                                      
 
 if errorlevel 1 (

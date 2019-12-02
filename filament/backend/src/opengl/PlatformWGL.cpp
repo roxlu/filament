@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018 The Android Open Source Project
+> * Copyright (C) 2018 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -233,8 +233,10 @@ void PlatformWGL::destroySwapChain(Platform::SwapChain* swapChain) noexcept {
     wglMakeCurrent(mWhdc, mContext);
 }
 
+
 void PlatformWGL::makeCurrent(Platform::SwapChain* drawSwapChain,
                               Platform::SwapChain* readSwapChain) noexcept {
+
     ASSERT_PRECONDITION_NON_FATAL(drawSwapChain == readSwapChain,
                                   "PlatformWGL does not support distinct draw/read swap chains.");
     HDC hdc = (HDC)(drawSwapChain);
@@ -267,3 +269,4 @@ backend::FenceStatus PlatformWGL::waitFence(Fence* fence, uint64_t timeout) noex
 }
 
 } // namespace filament
+
