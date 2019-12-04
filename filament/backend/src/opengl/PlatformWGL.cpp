@@ -72,7 +72,7 @@ using namespace backend;
 
 Driver* PlatformWGL::createDriver(void* const sharedGLContext) noexcept {
 
-  if (sharedContext != nullptr) {
+  if (sharedGLContext != nullptr) {
     
     const BackendConfig* bc = static_cast<BackendConfig*>(sharedGLContext);
     
