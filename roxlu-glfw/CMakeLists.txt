@@ -35,6 +35,7 @@ include_directories(
   ${prefix_dir}/include
   ${extern_dir}/glad/include
   ${extern_dir}
+  ${src_dir}
   )
 
 # When I make changes to PlatformWGL the following libraries are
@@ -85,7 +86,7 @@ list(APPEND roxlu_libs
   gdi32.lib
   )
 
-add_library(myloader STATIC ${extern_dir}/glad/src/glad.c)
+add_library(myloader STATIC ${extern_dir}/glad/src/glad.c ${src_dir}/OpenGlContext.cpp)
 list(APPEND roxlu_libs myloader)
 
 set(test_name test-shared-gl-context)
