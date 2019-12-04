@@ -85,16 +85,15 @@ int main(int argc, const char* argv[]) {
   cfg.title = "fila window";
   cfg.x = cfg.width;
   cfg.height = cfg.height * 0.5;
-  cfg.create_window = true;
+  cfg.create_window = false;
   cfg.shared_context = &ctx_main;
 
   if (0 != ctx_fila.init(cfg)) {
     printf("Failed to create shared context. (exiting).\n");
     exit(EXIT_FAILURE);
   }
-  ctx_fila.show();
+  //ctx_fila.show();
 
-  // --
   filament::backend::BackendConfig backend_cfg = {};
   backend_cfg.context = ctx_fila.gl;
   backend_cfg.hdc = ctx_fila.hdc;
