@@ -239,6 +239,8 @@ int main(int argc, const char* argv[]) {
 #endif
 
     if (ren->beginFrame(swap)) {
+      view->setViewport({0, 0, cfg.width, cfg.height});
+      view->setClearColor({1.0f - r, r * 0.5, r, 1.0f});
       ren->render(view);
       ren->endFrame();
     }
