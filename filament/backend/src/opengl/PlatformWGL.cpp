@@ -102,6 +102,8 @@ Driver* PlatformWGL::createDriver(void* const sharedGLContext) noexcept {
       utils::slog.e << "Failed to bind bluegl." << utils::io::endl;
       goto error;
     }
+
+    mContext = (HGLRC) bc->context;
     
     return OpenGLDriverFactory::create(this, sharedGLContext);
   }
@@ -209,7 +211,8 @@ Platform::SwapChain* PlatformWGL::createSwapChain(void* nativeWindow, uint64_t& 
         reportLastWindowsError();
     }
 
-	// We have to match pixel formats across the HDC and HGLRC (mContext)
+
+    // We have to match pixel formats across the HDC and HGLRC (mContext)
     int pixelFormat = ChoosePixelFormat(hdc, &mPfd);
     SetPixelFormat(hdc, pixelFormat, &mPfd);
 
