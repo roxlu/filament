@@ -71,7 +71,42 @@ namespace filament {
 using namespace backend;
 
 Driver* PlatformWGL::createDriver(void* const sharedGLContext) noexcept {
-    mPfd = {
+
+  if (sharedContext != nullptr) {
+    
+    const BackendConfig* bc = static_cast<BackendConfig*>(sharedGLContext);
+    
+    if (bc->context == nullptr) {
+      utils::slog.e << "Requested to use a given OpenGL context, but the "
+                        "`BackendConfig::context` is nullptr."
+                    << utils::io::endl;
+      goto error;
+    }
+
+    if (bc->hdc == nullptr) {
+      utils::slog.e << "Requested to use a given OpenGL context, but the "
+                       "`BackendConfig::hdc` is nullptr. Set this to the "
+                       "HDC of your window. "
+                    << utils::io::endl;
+      goto error;
+    }
+
+    if (wglMakeCurrent((HDC)bc->hdc, (HGLRC)bc->context) == FALSE) {
+      utils::slog.e << "Failed to make the given `BackendConfig::context` current."
+                    << utils::io::endl;
+      goto error;
+    }
+
+    int result = bluegl::bind();
+    if (result == -1) {
+      utils::slog.e << "Failed to bind bluegl." << utils::io::endl;
+      goto error;
+    }
+    
+    return OpenGLDriverFactory::create(this, sharedGLContext);
+  }
+  
+  mPfd = {
         sizeof(PIXELFORMATDESCRIPTOR),
         1,
         PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER,    // Flags
