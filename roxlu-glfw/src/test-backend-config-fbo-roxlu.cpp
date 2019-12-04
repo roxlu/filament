@@ -36,9 +36,8 @@ static const std::string FS = R"(#version 430
   in vec2 v_tex;
 
   void main() {
-     //vec4 col = texture(u_tex, v_tex);
-     //o_fragcolor = col;
-     o_fragcolor = vec4(0.4, 1.0, 0.3, 1.0);
+     vec4 col = texture(u_tex, v_tex);
+     o_fragcolor = col;
   }
 
 )";
@@ -144,12 +143,48 @@ int main(int argc, const char* argv[]) {
     .format(filament::Texture::InternalFormat::RGBA8)
     .build(*engine);
 
-  printf("--- %u\n", tex_col->getId());
+  if (nullptr == tex_col) {
+    printf("Failed to create color attachment. (exiting). \n");
+    exit(EXIT_FAILURE);
+  }
+
+  filament::Texture* tex_depth = filament::Texture::Builder()
+    .width(cfg.width)
+    .height(cfg.height)
+    .levels(1)
+    .usage(filament::Texture::Usage::DEPTH_ATTACHMENT)
+    .format(filament::Texture::InternalFormat::DEPTH24)
+    .build(*engine);
+
+  if (nullptr == tex_depth) {
+    printf("Failed to create the depth attachment. (exiting).\n");
+    exit(EXIT_FAILURE);
+  }
+
+  filament::RenderTarget* target = filament::RenderTarget::Builder()
+    .texture(filament::RenderTarget::COLOR, tex_col)
+    .texture(filament::RenderTarget::DEPTH, tex_depth)
+    .build(*engine);
+
+  if (nullptr == target) {
+    printf("Failed to create the render target. (exiting).\n");
+    exit(EXIT_FAILURE);
+  }
+
+  GLuint tex_col_id = 0;
+  tex_col->getId(*engine, (void*)&tex_col_id);
+
+  GLuint tex_depth_id = 0;
+  tex_depth->getId(*engine, (void*)&tex_depth_id);
+
+  printf("tex_col_id: %u\n", tex_col_id);
+  printf("tex_depth_id: %u\n", tex_depth_id);
 
   view->setCamera(cam);
   view->setScene(scene);
   view->setViewport({0, 0, cfg.width, cfg.height}); 
   view->setClearColor({1.0f, 1.0f, 0.0f, 1.0f});
+  view->setRenderTarget(target);
 
   ctx_main.print();
   ctx_main.show();
@@ -186,14 +221,18 @@ int main(int argc, const char* argv[]) {
   printf("fs_prog: %u\n", fs_prog);
   printf("vao: %u\n", vao);
   
-  float r = 0.0f;
+  float t = 0.0f;
   
   while (0 == ctx_main.processMessages()) {
 
-#if 1    
+#if 1
+    float r = 0.5 + sin(t) * 0.5;
     ctx_main.makeCurrent();
-    glClearColor(r, 1.0f - r, 0.0, 1.0f);
+    glViewport(0, 0, cfg.width, cfg.height);
+    glClearColor(r, 1.0f - r, 0.5 + (r * r), 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex_col_id);
     glUseProgram(fs_prog);
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -205,7 +244,7 @@ int main(int argc, const char* argv[]) {
       ren->endFrame();
     }
 
-    r += 0.01;
+    t += 0.01;
     ctx_main.swapBuffers();
   }
   
