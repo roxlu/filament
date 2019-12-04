@@ -374,7 +374,6 @@ namespace poly {
     return should_run;
   }
 
-
   int OpenGlContext::makeCurrent() {
   
     if (nullptr == hdc) {

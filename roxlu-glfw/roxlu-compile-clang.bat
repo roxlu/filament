@@ -55,7 +55,9 @@ cd "%install_dir%"
 cd bin
 :: test-shared-gl-context
 :: test-backend-config
-test-wgl-shared-context
+:: test-wgl-shared-context
+:: test-backend-config-roxlu
+test-backend-config-fbo-roxlu
 
 :end
 cd "%pwd%"
