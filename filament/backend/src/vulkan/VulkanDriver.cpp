@@ -535,6 +535,9 @@ void VulkanDriver::destroySwapChain(Handle<HwSwapChain> sch) {
         vkDestroySemaphore(mContext.device, surfaceContext.imageAvailable, VKALLOC);
         vkDestroySemaphore(mContext.device, surfaceContext.renderingFinished, VKALLOC);
         vkDestroySurfaceKHR(mContext.instance, surfaceContext.surface, VKALLOC);
+        vkDestroyImageView(mContext.device, surfaceContext.depth.view, VKALLOC);
+        vkDestroyImage(mContext.device, surfaceContext.depth.image, VKALLOC);
+        vkFreeMemory(mContext.device, surfaceContext.depth.memory, VKALLOC);
         if (mContext.currentSurface == &surfaceContext) {
             mContext.currentSurface = nullptr;
         }
@@ -671,6 +674,9 @@ void VulkanDriver::cancelExternalImage(void* image) {
 }
 
 void VulkanDriver::setExternalImage(Handle<HwTexture> th, void* image) {
+}
+
+void VulkanDriver::setExternalImagePlane(Handle<HwTexture> th, void* image, size_t plane) {
 }
 
 void VulkanDriver::setExternalStream(Handle<HwTexture> th, Handle<HwStream> sh) {

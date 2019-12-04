@@ -71,7 +71,44 @@ namespace filament {
 using namespace backend;
 
 Driver* PlatformWGL::createDriver(void* const sharedGLContext) noexcept {
-    mPfd = {
+
+  if (sharedGLContext != nullptr) {
+    
+    const BackendConfig* bc = static_cast<BackendConfig*>(sharedGLContext);
+    
+    if (bc->context == nullptr) {
+      utils::slog.e << "Requested to use a given OpenGL context, but the "
+                        "`BackendConfig::context` is nullptr."
+                    << utils::io::endl;
+      goto error;
+    }
+
+    if (bc->hdc == nullptr) {
+      utils::slog.e << "Requested to use a given OpenGL context, but the "
+                       "`BackendConfig::hdc` is nullptr. Set this to the "
+                       "HDC of your window. "
+                    << utils::io::endl;
+      goto error;
+    }
+
+    if (wglMakeCurrent((HDC)bc->hdc, (HGLRC)bc->context) == FALSE) {
+      utils::slog.e << "Failed to make the given `BackendConfig::context` current."
+                    << utils::io::endl;
+      goto error;
+    }
+
+    int result = bluegl::bind();
+    if (result == -1) {
+      utils::slog.e << "Failed to bind bluegl." << utils::io::endl;
+      goto error;
+    }
+
+    mContext = (HGLRC) bc->context;
+    
+    return OpenGLDriverFactory::create(this, sharedGLContext);
+  }
+  
+  mPfd = {
         sizeof(PIXELFORMATDESCRIPTOR),
         1,
         PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER,    // Flags
@@ -119,7 +156,7 @@ Driver* PlatformWGL::createDriver(void* const sharedGLContext) noexcept {
 
     PFNWGLCREATECONTEXTATTRIBSARBPROC wglCreateContextAttribs =
             (PFNWGLCREATECONTEXTATTRIBSARBPROC) wglGetProcAddress("wglCreateContextAttribsARB");
-    mContext = wglCreateContextAttribs(whdc, nullptr, attribs);
+    mContext = wglCreateContextAttribs(whdc, (HGLRC) sharedGLContext, attribs);
     if (!mContext) {
         utils::slog.e << "wglCreateContextAttribs() failed, whdc=" << whdc << utils::io::endl;
         goto error;
@@ -174,7 +211,8 @@ Platform::SwapChain* PlatformWGL::createSwapChain(void* nativeWindow, uint64_t& 
         reportLastWindowsError();
     }
 
-	// We have to match pixel formats across the HDC and HGLRC (mContext)
+
+    // We have to match pixel formats across the HDC and HGLRC (mContext)
     int pixelFormat = ChoosePixelFormat(hdc, &mPfd);
     SetPixelFormat(hdc, pixelFormat, &mPfd);
 

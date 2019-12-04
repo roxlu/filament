@@ -50,22 +50,19 @@ if (WIN32)
         set(CRT_FLAGS_DEBUG "/MDd")
     endif()
 
-    if (CMAKE_C_COMPILER_ID MATCHES "Clang")
-        # TODO: Figure out why pdb generation messes with incremental compilaton.
-        # IN RELEASE_WITH_DEBUG_INFO, generate debug info in .obj, no in pdb.
-        set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} ${CRT_FLAGS_RELEASE} /Z7")
-        set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} ${CRT_FLAGS_RELEASE} /Z7")
-
-        # In DEBUG, avoid generating a PDB file which seems to mess with incremental compilation.
-        # Instead generate debug info directly inside obj files.
-        set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} ${CRT_FLAGS_DEBUG} /Z7")
-        set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} ${CRT_FLAGS_DEBUG} /Z7")
-    endif()
+    # TODO: Figure out why pdb generation messes with incremental compilaton.
+    # IN RELEASE_WITH_DEBUG_INFO, generate debug info in .obj, no in pdb.
+    set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} ${CRT_FLAGS_RELEASE} /Z7")
+    set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} ${CRT_FLAGS_RELEASE} /Z7")
 
     # In RELEASE, also generate PDBs.
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} ${CRT_FLAGS_RELEASE} /Zi")
     set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} ${CRT_FLAGS_RELEASE} /Zi")
 
+    # In DEBUG, avoid generating a PDB file which seems to mess with incremental compilation.
+    # Instead generate debug info directly inside obj files.
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} ${CRT_FLAGS_DEBUG} /Z7")
+    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} ${CRT_FLAGS_DEBUG} /Z7")
 endif()
 
 # ==================================================================================================
@@ -209,6 +206,13 @@ endif()
 # saved by -fno-exception and 10 KiB saved by -fno-rtti).
 if (ANDROID OR WEBGL)
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-rtti")
+endif()
+
+# With WebGL, we disable RTTI even for debug builds because we pass emscripten::val back and forth
+# between C++ and JavaScript in order to efficiently access typed arrays, which are unbound.
+# NOTE: This is not documented in emscripten so we should consider a different approach.
+if (WEBGL)
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fno-rtti")
 endif()
 
 # ==================================================================================================

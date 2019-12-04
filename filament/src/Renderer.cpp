@@ -269,14 +269,7 @@ void FRenderer::renderJob(ArenaScope& arena, FView& view) {
     // FIXME: this doesn't work when the target is a user provided rendertarget
     const bool translucent = mSwapChain->isTransparent() || blending;
 
-
     const TextureFormat hdrFormat = getHdrFormat(view, translucent);
-
-    // FIXME: we use "hasPostProcess" as a proxy for deciding if we need a depth-buffer or not
-    //        historically this has been true, but it's definitely wrong.
-    //        This hack is needed because viewRenderTarget(output) doesn't have a depth-buffer,
-    //        so when skipping post-process (which draws directly into it), we can't rely on it.
-    const bool colorPassNeedsDepthBuffer = hasPostProcess;
 
     const Handle<HwRenderTarget> viewRenderTarget = getRenderTarget(view);
     FrameGraphRenderTargetHandle fgViewRenderTarget = fg.importRenderTarget("viewRenderTarget",
@@ -334,7 +327,7 @@ void FRenderer::renderJob(ArenaScope& arena, FView& view) {
     };
 
     auto& colorPass = fg.addPass<ColorPassData>("Color Pass",
-            [&svp, hdrFormat, colorPassNeedsDepthBuffer, msaa, clearFlags, useSSAO, ssao]
+            [&svp, hdrFormat, msaa, clearFlags, useSSAO, ssao]
             (FrameGraph::Builder& builder, ColorPassData& data) {
 
                 if (useSSAO) {
@@ -344,13 +337,11 @@ void FRenderer::renderJob(ArenaScope& arena, FView& view) {
                 data.color = builder.createTexture("Color Buffer",
                         { .width = svp.width, .height = svp.height, .format = hdrFormat });
 
-                if (colorPassNeedsDepthBuffer) {
-                    data.depth = builder.createTexture("Depth Buffer", {
-                            .width = svp.width, .height = svp.height,
-                            .format = TextureFormat::DEPTH24
-                    });
-                    data.depth = builder.write(builder.read(data.depth));
-                }
+                data.depth = builder.createTexture("Depth Buffer", {
+                        .width = svp.width, .height = svp.height,
+                        .format = TextureFormat::DEPTH24
+                });
+                data.depth = builder.write(builder.read(data.depth));
 
                 data.color = builder.write(builder.read(data.color));
                 data.rt = builder.createRenderTarget("Color Pass Target", {
@@ -399,7 +390,7 @@ void FRenderer::renderJob(ArenaScope& arena, FView& view) {
 
     if (hasPostProcess) {
         if (toneMapping) {
-            input = ppm.toneMapping(fg, input, ldrFormat, dithering, translucent);
+            input = ppm.toneMapping(fg, input, ldrFormat, dithering, translucent, fxaa);
         }
         if (fxaa) {
             input = ppm.fxaa(fg, input, ldrFormat, !toneMapping || translucent);
@@ -421,12 +412,10 @@ void FRenderer::renderJob(ArenaScope& arena, FView& view) {
         if (viewRenderTarget == mRenderTarget) {
             // The default render target is not multi-sampled, so we need an intermediate
             // buffer.
-            // The default render target also doesn't have a depth buffer, so if one is needed, we
-            // use an intermediate buffer also.
             // The intermediate buffer  is accomplished with a "fake" dynamicScaling (i.e. blit)
             // operation.
 
-            if (msaa > 1 || colorPassNeedsDepthBuffer) {
+            if (msaa > 1) {
                 input = ppm.dynamicScaling(fg, msaa, scaled, blending, input, ldrFormat);
             }
         }
