@@ -90,12 +90,15 @@ Driver* PlatformWGL::createDriver(void* const sharedGLContext) noexcept {
                     << utils::io::endl;
       goto error;
     }
+    //printf("--- GL_VENDOR: %s\n", (const char*)glGetString(GL_VENDOR));
+    //printf("--- GL_RENDERER: %s\n", (const char*)glGetString(GL_RENDERER));
 
     if (wglMakeCurrent((HDC)bc->hdc, (HGLRC)bc->context) == FALSE) {
       utils::slog.e << "Failed to make the given `BackendConfig::context` current."
                     << utils::io::endl;
       goto error;
     }
+
 
     int result = bluegl::bind();
     if (result == -1) {
@@ -236,6 +239,7 @@ void PlatformWGL::destroySwapChain(Platform::SwapChain* swapChain) noexcept {
 
 void PlatformWGL::makeCurrent(Platform::SwapChain* drawSwapChain,
                               Platform::SwapChain* readSwapChain) noexcept {
+
 
     ASSERT_PRECONDITION_NON_FATAL(drawSwapChain == readSwapChain,
                                   "PlatformWGL does not support distinct draw/read swap chains.");
