@@ -3,8 +3,8 @@ set pwd=%CD%
 set base_dir=%pwd%/roxlu-clang
 set build_dir=%base_dir%/build
 set install_dir=%base_dir%/installed
-set runtime=mt
-set static_flag=On
+set runtime=md
+set static_flag=Off
 
 :: Iterate over command line arguments
 :argsloop
@@ -16,6 +16,11 @@ set static_flag=On
   if "%1" == "md" (
     set runtime=md
     set static_flag=Off
+  )
+
+  if "%1" == "mt" (
+    set runtime=mt
+    set static_flag=On
   )
   
 echo %1
@@ -51,6 +56,6 @@ if errorlevel 1 (
    exit
 )
 
-cmake --build . --target install --config "Release" --parallel 12
+cmake --build . --target install --config "Release" --parallel 12 -- -v
 
 cd "%pwd%"
