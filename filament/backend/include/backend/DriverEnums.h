@@ -803,7 +803,27 @@ struct PolygonOffset {
     float slope = 0;        // factor in GL-speak
     float constant = 0;     // units in GL-speak
 };
-
+  
+/* @todo roxlu begin */
+  
+/**
+ * When you want to use a shared context you have to provide the
+ * context yourself. This seems to be a limitation of how we can
+ * create a OpenGL context on Windows. The context that is passed
+ * as the second argument (the shared one) into
+ * `wglCreateContextAttribsARB()` need to be created on the same
+ * thread as where we call `wglCreateContextAttribsARB()`. Therefore
+ * when you want to make use of a shared context, make sure to create
+ * the yourself and pass the `BackendConfig` as `void*` to
+ * `Engine::create()`
+ */  
+struct BackendConfig {
+  void* context = nullptr;  // Set this to the GL context that you want to use by the OpenGL driver. 
+  void* hdc = nullptr;      // When you set `BackendConfig::context` to a customly initialized OpenGL context, the driver needs a HDC. 
+};
+  
+/* @todo roxlu end */
+  
 
 } // namespace backend
 } // namespace filament
