@@ -1,0 +1,23 @@
+material {
+    name : color,
+    shadingModel : lit,
+    blending: opaque,
+    doubleSided: false,
+    parameters : [
+        { type: float3, name: albedo },
+        { type: float, name: roughness },
+        { type: float, name: metallic },
+        { type: float, name: alpha }
+    ],
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+
+        float s = 0.5 + sin(getUserTime().x) * 0.5;
+        
+        material.emissive.a = 1.0;
+        material.baseColor.rgb = vec3(s , 0.0, 0.0); 
+    }
+}

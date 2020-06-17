@@ -237,6 +237,7 @@ if (NOT ANDROID)
     add_demo(texturedquad)
     add_demo(vbotest)
     add_demo(viewtest)
+    add_demo(matmesh)
 
     # Sample app specific
     target_link_libraries(frame_generator PRIVATE imageio)
@@ -246,6 +247,7 @@ if (NOT ANDROID)
     target_link_libraries(sample_cloth PRIVATE filameshio)
     target_link_libraries(sample_normal_map PRIVATE filameshio)
     target_link_libraries(suzanne PRIVATE filameshio suzanne-resources)
+    target_link_libraries(matmesh PRIVATE filameshio suzanne-resources)
 
 endif()
 
