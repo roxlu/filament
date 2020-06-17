@@ -48,7 +48,13 @@ fi
 
 # -------------------------------------------------------------
 
-cmake --build . --target matmesh --parallel 16
+target=matmesh
+
+if [ ! -f ${install_dir}/bin/matc ] ; then
+    target=install
+fi
+
+cmake --build . --target ${target} --parallel 16
 
 if [ $? -ne 0 ] ; then
     echo "Failed to build."
