@@ -2,7 +2,7 @@ material {
     name : color,
     shadingModel : lit,
     blending: opaque,
-    doubleSided: false,
+    doubleSided: true,
     parameters : [
         { type: float3, name: albedo },
         { type: float, name: roughness },
@@ -16,8 +16,9 @@ fragment {
         prepareMaterial(material);
 
         float s = 0.5 + sin(getUserTime().x) * 0.5;
-        
+
         material.emissive.a = 1.0;
-        material.baseColor.rgb = vec3(s , 0.0, 0.0); 
+        material.baseColor.rgb = 10 * vec3(s , 0.0, 0.0);
+        material.emissive.rgb = 10 *vec3(s , 0.0, 0.0);  
     }
 }
