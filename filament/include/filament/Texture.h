@@ -282,6 +282,13 @@ public:
     InternalFormat getFormat() const noexcept;
 
     /**
+     * Sets `result` to the texture ID that is used by the current driver (OpenGL/Vulkan).
+     * @return We set `result`  to the texture ID that is used by the current driver (OpenGL/Vulkan).
+     */
+    void getId(Engine& engine, void* result);
+
+
+    /**
      * Specify the image of a 2D texture for a level.
      *
      * @param engine    Engine this texture is associated to.
@@ -501,6 +508,7 @@ public:
     void generatePrefilterMipmap(Engine& engine,
             PixelBufferDescriptor&& buffer, const FaceOffsets& faceOffsets,
             PrefilterOptions const* options = nullptr);
+
 };
 
 } // namespace filament
