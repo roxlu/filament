@@ -56,6 +56,9 @@
 #include <filament/Scene.h>
 #include <filament/TransformManager.h>
 #include <filament/View.h>
+#include <filament/TextureSampler.h>
+#include <image/KtxBundle.h>
+#include <image/KtxUtility.h>
 #include <utils/EntityManager.h>
 #include <filameshio/MeshReader.h>
 #include <filamentapp/Config.h>
@@ -88,6 +91,7 @@ public:
 public:
   std::string material_filepath;
   std::string mesh_filepath;
+  std::string albedo_filepath; 
 };
 
 /* -------------------------------------------------------- */
@@ -153,7 +157,32 @@ int main(int argc, char** argv) {
     scene->setSkybox(nullptr);
     
     auto mi = app.materialInstance = app.material->createInstance();
-   
+
+    /* Check if we have to use an albedo texture. */
+    filament::Texture* albedo_tex = nullptr;
+    image::KtxBundle* albedo_bundle = nullptr;
+    std::string albedo_data;
+    
+    if (0 != matmesh_options.albedo_filepath.size()) {
+      
+      if (0 != load_file(matmesh_options.albedo_filepath, albedo_data)) {
+        printf("Failed to load albedo texture: %s. (exiting).\n", matmesh_options.albedo_filepath.c_str());
+        exit(EXIT_FAILURE);
+      }
+
+      albedo_bundle = new image::KtxBundle((uint8_t*)albedo_data.c_str(), albedo_data.size());
+      albedo_tex = image::ktx::createTexture(engine, albedo_bundle, true);
+    }
+
+    filament::TextureSampler sampler(
+      filament::TextureSampler::MinFilter::LINEAR_MIPMAP_LINEAR,
+      filament:: TextureSampler::MagFilter::LINEAR
+    );
+
+    if (nullptr != albedo_tex) {
+      mi->setParameter("albedo", albedo_tex, sampler);
+    }
+    
     /* Add geometry into the scene. */
     std::string mesh_data;
     if (0 != load_file(matmesh_options.mesh_filepath, mesh_data)) {
@@ -214,7 +243,7 @@ static void pre_render(
   }
 
   renderer->setClearOptions({
-    .clearColor = { 0.0f, 0.0f, 0.0f, 1.0f },
+    .clearColor = { 0.00f, 0.13f, 0.0f, 1.0f },
     .clear = true
   });
 }
@@ -228,10 +257,11 @@ static void pre_render(
  */
 static int handle_command_line_arguments(int argc, char* argv[], MatMeshOptions& result) {
   
-  const char* opt_str = "m";
+  const char* opt_str = "moa";
   struct option opts[] = {
     { "material", required_argument, nullptr, 'm' },
     { "mesh", required_argument, nullptr, 'o' },
+    { "albedo", required_argument, nullptr, 'a' },
     { nullptr, 0, nullptr, 0 }
   };
 
@@ -251,6 +281,11 @@ static int handle_command_line_arguments(int argc, char* argv[], MatMeshOptions&
 
       case 'o': {
         result.mesh_filepath = arg;
+        break;
+      }
+
+      case 'a': {
+        result.albedo_filepath = arg;
         break;
       }
           

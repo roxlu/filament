@@ -1,0 +1,24 @@
+material {
+  name : billboard,
+  shadingModel : unlit,
+  blending: transparent,
+  doubleSided: true,
+  parameters : [
+    { type: sampler2d, name: albedo, precision: high, format: float },  
+    { type: float, name: roughness },
+    { type: float, name: metallic },
+    { type: float, name: alpha }
+  ],
+  requires: [
+    uv0
+  ]  
+}
+
+fragment {
+  void material(inout MaterialInputs material) {
+    prepareMaterial(material);
+    vec4 col = texture(materialParams_albedo, getUV0());
+    material.baseColor = col;
+    material.baseColor.rgb *= col.a;
+  }
+}

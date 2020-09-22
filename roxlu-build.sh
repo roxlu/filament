@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # -------------------------------------------------------------
 # 
@@ -49,12 +49,12 @@ fi
 # -------------------------------------------------------------
 
 target=matmesh
-
 if [ ! -f ${install_dir}/bin/matc ] ; then
     target=install
 fi
 
-cmake --build . --target ${target} --parallel 16
+num_cpus=$(ncproc --all)
+cmake --build . --target ${target} --parallel ${num_cpus}
 
 if [ $? -ne 0 ] ; then
     echo "Failed to build."
@@ -64,14 +64,20 @@ fi
 # -------------------------------------------------------------
 
 # Create the filamesh + filamat files. (done every run)
+echo "Creating mesh + material"
 cd ${install_dir}/bin/
-./filamesh -c ${asset_dir}/models/cube/cube-v2.obj ${build_dir}/cube-v2.filamesh
-./matc -a opengl -p desktop -o ${build_dir}/glow.filamat ${mat_dir}/glow.mat
-
+if [ 1 -eq 1 ] ; then 
+    ./filamesh -c ${asset_dir}/models/cube/cube-v2.obj ${build_dir}/cube-v2.filamesh
+    ./filamesh -c ${asset_dir}/models/transparency/transparency.obj ${build_dir}/transparency.filamesh
+    ./matc -a opengl -p desktop -o ${build_dir}/glow.filamat ${mat_dir}/glow.mat
+    ./matc -a opengl -p desktop -o ${build_dir}/transparency.filamat ${mat_dir}/transparency.mat
+    ./mipgen --compress=s3tc_rgba_dxt5 ${asset_dir}/models/transparency/fs-dots.png ${asset_dir}/models/transparency/fs-dots.ktx
+fi
 # -------------------------------------------------------------
 
 # Run `matmesh` 
 cd ${build_dir}/samples
-./matmesh --material ${build_dir}/glow.filamat --mesh ${build_dir}/cube-v2.filamesh
+#./matmesh --material ${build_dir}/glow.filamat --mesh ${build_dir}/cube-v2.filamesh
 #./matmesh --material ${build_dir}/glow.filamat --mesh ./generated/resources/suzanne.filamesh
+./matmesh --material ${build_dir}/transparency.filamat --mesh ${build_dir}/transparency.filamesh --albedo ${asset_dir}/models/transparency/fs-dots.ktx
 
