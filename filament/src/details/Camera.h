@@ -130,7 +130,7 @@ public:
     }
 
     float getFieldOfViewInDegrees(Camera::Fov direction) const noexcept {
-        return getFieldOfView(direction) * float(180.0f / math::F_PI);
+        return getFieldOfView(direction) * math::f::RAD_TO_DEG;
     }
 
     // returns a Frustum object in world space
@@ -169,8 +169,8 @@ private:
     math::mat4 mProjectionForCulling;  // projection matrix (with far plane)
     math::double4 mScaling = {1.0f};   // additional scaling applied to projection
 
-    float mNear;
-    float mFar;
+    float mNear{};
+    float mFar{};
     // exposure settings
     float mAperture = 16.0f;
     float mShutterSpeed = 1.0f / 125.0f;
@@ -190,7 +190,7 @@ struct CameraInfo {
     float zf{};                     // distance (positive) to the far plane
     float ev100{};                  // exposure
     float f{};                      // focal length (in m)
-    float A{};                      // aperture diameter (in m)
+    float A{};                      // f / aperture diameter (in m)
     math::float3 worldOffset{};     // world offset, API-level camera position
     math::float3 const& getPosition() const noexcept { return model[3].xyz; }
     math::float3 getForwardVector() const noexcept { return normalize(-model[2].xyz); }

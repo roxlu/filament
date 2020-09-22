@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#if defined(ANDROID) || defined(SWIFTSHADER) || defined(FILAMENT_USE_EXTERNAL_GLES3) || defined(__EMSCRIPTEN__)
+#if defined(ANDROID) || defined(FILAMENT_USE_EXTERNAL_GLES3) || defined(__EMSCRIPTEN__)
 
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
@@ -44,6 +44,9 @@ PFNGLGETDEBUGMESSAGELOGKHRPROC glGetDebugMessageLogKHR;
 #endif
 #ifdef GL_EXT_disjoint_timer_query
 PFNGLGETQUERYOBJECTUI64VEXTPROC glGetQueryObjectui64v;
+#endif
+#ifdef GL_EXT_clip_control
+PFNGLCLIPCONTROLEXTPROC glClipControl;
 #endif
 
 static std::once_flag sGlExtInitialized;
@@ -101,6 +104,11 @@ void importGLESExtensionsEntryPoints() {
                         "glGetQueryObjectui64vEXT");
 #endif
     });
+#ifdef GL_EXT_clip_control
+    glClipControl =
+            (PFNGLCLIPCONTROLEXTPROC)eglGetProcAddress(
+                    "glClipControlEXT");
+#endif
 }
 
 } // namespace glext

@@ -1,0 +1,131 @@
+material {
+    name : dofMipmap,
+    parameters : [
+        {
+            type : sampler2d,
+            name : foreground,
+            precision: medium
+        },
+        {
+            type : sampler2d,
+            name : background,
+            precision: medium
+        },
+        {
+            type : sampler2d,
+            name : cocFgBg,
+            precision: medium
+        },
+        {
+            type : int,
+            name : mip
+        },
+        {
+            type : float,
+            name : weightScale
+        }
+    ],
+    variables : [
+        vertex
+    ],
+    outputs : [
+        {
+            name : color,
+            target : color,
+            type : float4
+        },
+        {
+            name : background,
+            target : color,
+            type : float4
+        },
+        {
+            name : cocFgBg,
+            target : color,
+            type : float2
+        }
+    ],
+    domain : postprocess,
+    depthWrite : false,
+    depthCulling : false
+}
+
+vertex {
+    void postProcessVertex(inout PostProcessVertexInputs postProcess) {
+        postProcess.vertex.xy = postProcess.normalizedUV;
+    }
+}
+
+fragment {
+
+#include "dofUtils.fs"
+
+void dummy(){}
+
+void postProcess(inout PostProcessInputs postProcess) {
+    highp vec2 pixelSize = 1.0 / vec2(textureSize(materialParams_foreground, materialParams.mip));
+    highp vec2 uv = variable_vertex.xy - pixelSize.xy * 0.5;
+
+    // the source is guaranteed to be a multiple of two, so we now the bilinear weights are 0.25
+
+    // the bilateral weights need to be scaled by to match the lower resolution
+    float weightScale = materialParams.weightScale;
+    float mip = float(materialParams.mip);
+
+    // fetch the 4 corresponding CoC
+    vec4 d0, d1;
+    d0.xy = textureLodOffset(materialParams_cocFgBg, uv, mip, ivec2(0, 1)).rg;
+    d0.zw = textureLodOffset(materialParams_cocFgBg, uv, mip, ivec2(1, 1)).rg;
+    d1.xy = textureLodOffset(materialParams_cocFgBg, uv, mip, ivec2(1, 0)).rg;
+    d1.zw = textureLodOffset(materialParams_cocFgBg, uv, mip, ivec2(0, 0)).rg;
+    vec4 fw = vec4(d0.xz, d1.xz);
+    vec4 bw = vec4(d0.yw, d1.yw);
+
+    /*
+     * foreground
+     */
+
+    vec4 fg01 = textureLodOffset(materialParams_foreground, uv, mip, ivec2(0, 1));
+    vec4 fg11 = textureLodOffset(materialParams_foreground, uv, mip, ivec2(1, 1));
+    vec4 fg10 = textureLodOffset(materialParams_foreground, uv, mip, ivec2(1, 0));
+    vec4 fg00 = textureLodOffset(materialParams_foreground, uv, mip, ivec2(0, 0));
+
+    // We calculates the downsampled CoC to be conservative, that is if any
+    // of the 4 texels are foreground or background, then the whole new texel is too.
+    float fgCoc = min4(fw);
+
+    // The forground bilateral weight is calculated as saturate(1.0 - (fgCoc - w)), which always
+    // yields 1.0. Note the "missing" abs(), this is because we want to let the background layer
+    // leak into the foreground layer, to avoid aliasing artifacts.
+    vec4 foreground = (fg01 + fg11 + fg10 + fg00) * 0.25;
+
+    /*
+     * background
+     */
+
+    vec4 bg01 = textureLodOffset(materialParams_background, uv, mip, ivec2(0, 1));
+    vec4 bg11 = textureLodOffset(materialParams_background, uv, mip, ivec2(1, 1));
+    vec4 bg10 = textureLodOffset(materialParams_background, uv, mip, ivec2(1, 0));
+    vec4 bg00 = textureLodOffset(materialParams_background, uv, mip, ivec2(0, 0));
+
+    float bgCoc = max4(bw);
+
+    // The background bilateral weight is calculated as saturate(1.0 - abs(bgCoc - w)),
+    // but the abs() is not needed since bgCoc - w is guaranteed to be >= 0.
+    bw = saturate(1.0 - (bgCoc - bw) * weightScale);
+    float bgScale = 1.0 / (bw.x + bw.y + bw.z + bw.w);
+    vec4 background = (bg01 * bw.x + bg11 * bw.y + bg10 * bw.z + bg00 * bw.w) * bgScale;
+
+#if POST_PROCESS_OPAQUE
+    // kill the work performed above
+    foreground.a = 1.0;
+    background.a = 1.0;
+#endif
+
+    // Output to MRTs
+    postProcess.color       = foreground;
+    postProcess.background  = background;
+    postProcess.cocFgBg     = vec2(fgCoc, bgCoc);
+}
+
+}

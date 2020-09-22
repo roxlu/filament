@@ -177,10 +177,30 @@ void MetalDriver::createTextureSwizzledR(Handle<HwTexture> th, SamplerType targe
     // TODO: implement texture swizzle
 }
 
-void MetalDriver::importTextureR(Handle<HwTexture> th, intptr_t id,
+void MetalDriver::importTextureR(Handle<HwTexture> th, intptr_t i,
         SamplerType target, uint8_t levels,
         TextureFormat format, uint8_t samples, uint32_t width, uint32_t height,
         uint32_t depth, TextureUsage usage) {
+    id<MTLTexture> metalTexture = (id<MTLTexture>) CFBridgingRelease((void*) i);
+    ASSERT_PRECONDITION(metalTexture.width == width,
+            "Imported id<MTLTexture> width (%d) != Filament texture width (%d)",
+            metalTexture.width, width);
+    ASSERT_PRECONDITION(metalTexture.height == height,
+            "Imported id<MTLTexture> height (%d) != Filament texture height (%d)",
+            metalTexture.height, height);
+    ASSERT_PRECONDITION(metalTexture.mipmapLevelCount == levels,
+            "Imported id<MTLTexture> levels (%d) != Filament texture levels (%d)",
+            metalTexture.mipmapLevelCount, levels);
+    MTLPixelFormat filamentMetalFormat = getMetalFormat(format);
+    ASSERT_PRECONDITION(metalTexture.pixelFormat == filamentMetalFormat,
+            "Imported id<MTLTexture> format (%d) != Filament texture format (%d)",
+            metalTexture.pixelFormat, filamentMetalFormat);
+    MTLTextureType filamentMetalType = getMetalType(target);
+    ASSERT_PRECONDITION(metalTexture.textureType == filamentMetalType,
+            "Imported id<MTLTexture> type (%d) != Filament texture type (%d)",
+            metalTexture.textureType, filamentMetalType);
+    construct_handle<MetalTexture>(mHandleMap, th, *mContext, target, levels, format, samples,
+        width, height, depth, usage, metalTexture);
 }
 
 void MetalDriver::createSamplerGroupR(Handle<HwSamplerGroup> sbh, size_t size) {
@@ -451,11 +471,9 @@ void MetalDriver::destroySync(Handle<HwSync> sh) {
 
 
 void MetalDriver::terminate() {
-    // Wait for all frames to finish by submitting and waiting on a dummy command buffer.
+    // finish() will flush the pending command buffer and will ensure all GPU work has finished.
     // This must be done before calling bufferPool->reset() to ensure no buffers are in flight.
-    id<MTLCommandBuffer> oneOffBuffer = [mContext->commandQueue commandBuffer];
-    [oneOffBuffer commit];
-    [oneOffBuffer waitUntilCompleted];
+    finish();
 
     mContext->bufferPool->reset();
     mContext->commandQueue = nil;
@@ -581,6 +599,11 @@ bool MetalDriver::isFrameTimeSupported() {
         return true;
     }
     return false;
+}
+
+math::float2 MetalDriver::getClipSpaceParams() {
+    // z-coordinate of clip-space is in [0,w]
+    return math::float2{ -0.5f, 0.5f };
 }
 
 void MetalDriver::updateVertexBuffer(Handle<HwVertexBuffer> vbh, size_t index,
@@ -727,8 +750,8 @@ void MetalDriver::beginRenderPass(Handle<HwRenderTarget> rth,
                        static_cast<double>(params.viewport.height),
             .width = static_cast<double>(params.viewport.width),
             .height = static_cast<double>(params.viewport.height),
-            .znear = 0.0,
-            .zfar = 1.0
+            .znear = static_cast<double>(params.depthRange.near),
+            .zfar = static_cast<double>(params.depthRange.far)
     };
     [mContext->currentRenderPassEncoder setViewport:metalViewport];
 
@@ -739,6 +762,8 @@ void MetalDriver::beginRenderPass(Handle<HwRenderTarget> rth,
     mContext->depthStencilState.invalidate();
     mContext->cullModeState.invalidate();
 }
+
+void MetalDriver::nextSubpass(int dummy) {}
 
 void MetalDriver::endRenderPass(int dummy) {
     [mContext->currentRenderPassEncoder endEncoding];
@@ -929,30 +954,6 @@ void MetalDriver::blit(TargetBufferFlags buffers,
                         dstRect.left >= 0 && dstRect.bottom >= 0,
             "Source and destination rects must be positive.");
 
-    size_t srcAttachIndex = 0;
-    if (any(buffers & TargetBufferFlags::COLOR0)) {
-        srcAttachIndex = 0;
-    }
-    if (any(buffers & TargetBufferFlags::COLOR1)) {
-        srcAttachIndex = 1;
-    }
-    if (any(buffers & TargetBufferFlags::COLOR2)) {
-        srcAttachIndex = 2;
-    }
-    if (any(buffers & TargetBufferFlags::COLOR3)) {
-        srcAttachIndex = 3;
-    }
-    MetalRenderTarget::Attachment srcColorAttachment = srcTarget->getColorAttachment(srcAttachIndex);
-
-    // We always blit to the COLOR0 attachment.
-    MetalRenderTarget::Attachment dstColorAttachment = dstTarget->getColorAttachment(0);
-
-    id<MTLTexture> srcTexture = srcColorAttachment.texture;
-    id<MTLTexture> dstTexture = dstColorAttachment.texture;
-
-    ASSERT_PRECONDITION(srcTexture != nil && dstTexture != nil,
-            "Source texture and destination texture must not be nil");
-
     // Metal's texture coordinates have (0, 0) at the top-left of the texture, but Filament's
     // coordinates have (0, 0) at bottom-left.
     MTLRegion srcRegion = MTLRegionMake2D(
@@ -968,33 +969,73 @@ void MetalDriver::blit(TargetBufferFlags buffers,
             dstHeight - (NSUInteger) dstRect.bottom - dstRect.height,
             dstRect.width, dstRect.height);
 
-    const uint8_t srcLevel = srcColorAttachment.level;
-    const uint8_t dstLevel = dstColorAttachment.level;
-
     auto isBlitableTextureType = [](MTLTextureType t) {
         return t == MTLTextureType2D || t == MTLTextureType2DMultisample;
     };
-    ASSERT_PRECONDITION(isBlitableTextureType(srcTexture.textureType) &&
-                        isBlitableTextureType(dstTexture.textureType),
-                       "Metal does not support blitting to/from non-2D textures.");
 
     MetalBlitter::BlitArgs args;
     args.filter = filter;
-    args.source.level = srcLevel;
     args.source.region = srcRegion;
-    args.destination.level = dstLevel;
     args.destination.region = dstRegion;
 
-    if (any(buffers & TargetBufferFlags::COLOR)) {
-        args.source.color = srcTexture;
-        args.destination.color = dstTexture;
+    if (any(buffers & TargetBufferFlags::COLOR_ALL)) {
+        size_t srcAttachIndex = 0;
+        if (any(buffers & TargetBufferFlags::COLOR0)) {
+            srcAttachIndex = 0;
+        }
+        if (any(buffers & TargetBufferFlags::COLOR1)) {
+            srcAttachIndex = 1;
+        }
+        if (any(buffers & TargetBufferFlags::COLOR2)) {
+            srcAttachIndex = 2;
+        }
+        if (any(buffers & TargetBufferFlags::COLOR3)) {
+            srcAttachIndex = 3;
+        }
+
+        MetalRenderTarget::Attachment srcColorAttachment = srcTarget->getColorAttachment(srcAttachIndex);
+
+        // We always blit to the COLOR0 attachment.
+        MetalRenderTarget::Attachment dstColorAttachment = dstTarget->getColorAttachment(0);
+
+        if (srcColorAttachment && dstColorAttachment) {
+            ASSERT_PRECONDITION(isBlitableTextureType(srcColorAttachment.texture.textureType) &&
+                                isBlitableTextureType(dstColorAttachment.texture.textureType),
+                               "Metal does not support blitting to/from non-2D textures.");
+
+            args.source.color = srcColorAttachment.texture;
+            args.destination.color = dstColorAttachment.texture;
+            args.source.level = srcColorAttachment.level;
+            args.destination.level = dstColorAttachment.level;
+        }
     }
 
     if (any(buffers & TargetBufferFlags::DEPTH)) {
         MetalRenderTarget::Attachment srcDepthAttachment = srcTarget->getDepthAttachment();
         MetalRenderTarget::Attachment dstDepthAttachment = dstTarget->getDepthAttachment();
-        args.source.depth = srcDepthAttachment.texture;
-        args.destination.depth = dstDepthAttachment.texture;
+
+        if (srcDepthAttachment && dstDepthAttachment) {
+            ASSERT_PRECONDITION(isBlitableTextureType(srcDepthAttachment.texture.textureType) &&
+                                isBlitableTextureType(dstDepthAttachment.texture.textureType),
+                               "Metal does not support blitting to/from non-2D textures.");
+
+            args.source.depth = srcDepthAttachment.texture;
+            args.destination.depth = dstDepthAttachment.texture;
+
+            if (args.blitColor()) {
+                // If blitting color, we've already set the source and destination levels.
+                // Check that they match the requested depth levels.
+                ASSERT_PRECONDITION(args.source.level == srcDepthAttachment.level,
+                                   "Color and depth source LOD must match. (%d != %d)",
+                                   args.source.level, srcDepthAttachment.level);
+                ASSERT_PRECONDITION(args.destination.level == dstDepthAttachment.level,
+                                   "Color and depth destination LOD must match. (%d != %d)",
+                                   args.destination.level, dstDepthAttachment.level);
+            }
+
+            args.source.level = srcDepthAttachment.level;
+            args.destination.level = dstDepthAttachment.level;
+        }
     }
 
     mContext->blitter->blit(getPendingCommandBuffer(mContext), args);
@@ -1006,6 +1047,15 @@ void MetalDriver::draw(backend::PipelineState ps, Handle<HwRenderPrimitive> rph)
     auto primitive = handle_cast<MetalRenderPrimitive>(mHandleMap, rph);
     auto program = handle_cast<MetalProgram>(mHandleMap, ps.program);
     const auto& rs = ps.rasterState;
+
+    // If the material debugger is enabled, avoid fatal (or cascading) errors and that can occur
+    // during the draw call when the program is invalid. The shader compile error has already been
+    // dumped to the console at this point, so it's fine to simply return early.
+    if (FILAMENT_ENABLE_MATDBG && UTILS_UNLIKELY(!program->isValid)) {
+        return;
+    }
+
+    ASSERT_PRECONDITION(program->isValid, "Attempting to draw with an invalid Metal program.");
 
     // Pipeline state
     MTLPixelFormat colorPixelFormat[4] = { MTLPixelFormatInvalid };
@@ -1103,6 +1153,11 @@ void MetalDriver::draw(backend::PipelineState ps, Handle<HwRenderPrimitive> rph)
     enumerateSamplerGroups(program, [this, &texturesToBind, &samplersToBind](
             const SamplerGroup::Sampler* sampler,
             uint8_t binding) {
+        // We currently only support a max of SAMPLER_BINDING_COUNT samplers. Ignore any additional
+        // samplers that may be bound.
+        if (binding >= SAMPLER_BINDING_COUNT) {
+            return;
+        }
         const auto metalTexture = handle_const_cast<MetalTexture>(mHandleMap, sampler->t);
         texturesToBind[binding] = metalTexture->texture;
 

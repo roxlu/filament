@@ -115,12 +115,19 @@ struct MetalProgram : public HwProgram {
     id<MTLFunction> vertexFunction;
     id<MTLFunction> fragmentFunction;
     Program::SamplerGroupInfo samplerGroupInfo;
+    bool isValid = false;
 };
 
 struct MetalTexture : public HwTexture {
     MetalTexture(MetalContext& context, SamplerType target, uint8_t levels, TextureFormat format,
             uint8_t samples, uint32_t width, uint32_t height, uint32_t depth, TextureUsage usage)
             noexcept;
+
+    // Constructor for importing an id<MTLTexture> outside of Filament.
+    MetalTexture(MetalContext& context, SamplerType target, uint8_t levels, TextureFormat format,
+            uint8_t samples, uint32_t width, uint32_t height, uint32_t depth, TextureUsage usage,
+            id<MTLTexture> texture) noexcept;
+
     ~MetalTexture();
 
     void load2DImage(uint32_t level, uint32_t xoffset, uint32_t yoffset, uint32_t width,
@@ -164,7 +171,7 @@ public:
     };
 
     MetalRenderTarget(MetalContext* context, uint32_t width, uint32_t height, uint8_t samples,
-            Attachment colorAttachments[4], Attachment depthAttachment);
+            Attachment colorAttachments[MRT::TARGET_COUNT], Attachment depthAttachment);
     explicit MetalRenderTarget(MetalContext* context)
             : HwRenderTarget(0, 0), context(context), defaultRenderTarget(true) {}
 
@@ -187,11 +194,11 @@ private:
     bool defaultRenderTarget = false;
     uint8_t samples = 1;
 
-    Attachment color[4] = {};
+    Attachment color[MRT::TARGET_COUNT] = {};
     Attachment depth = {};
 
     // "Sidecar" textures used to implement automatic MSAA resolve.
-    id<MTLTexture> multisampledColor[4] = { 0 };
+    id<MTLTexture> multisampledColor[MRT::TARGET_COUNT] = { 0 };
     id<MTLTexture> multisampledDepth = nil;
 };
 

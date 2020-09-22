@@ -181,7 +181,8 @@ static void printUsage(char* name) {
             "           OpenEXR: RAW, RLE, ZIPS, ZIP, PIZ (default)\n"
             "           DDS: 8, 16 (default), 32\n\n"
             "   --size=power-of-two, -s power-of-two\n"
-            "       Size of the output cubemaps (base level), 256 by default\n\n"
+            "       Size of the output cubemaps (base level), 256 by default\n"
+            "       Also applies to DFG LUT\n\n"
             "   --deploy=dir, -x dir\n"
             "       Generate everything needed for deployment into <dir>\n\n"
             "   --extract=dir\n"
@@ -933,7 +934,7 @@ void iblRoughnessPrefilter(
         .endianness = KtxBundle::ENDIAN_DEFAULT,
         .glType = KtxBundle::R11F_G11F_B10F,
         .glTypeSize = 1,
-        .glFormat = KtxBundle::R11F_G11F_B10F,
+        .glFormat = KtxBundle::RGB,
         .glInternalFormat = KtxBundle::R11F_G11F_B10F,
         .glBaseInternalFormat = KtxBundle::R11F_G11F_B10F,
         .pixelWidth = 1U << baseExp,
@@ -1192,7 +1193,7 @@ void extractCubemapFaces(utils::JobSystem& js, const utils::Path& iname, const C
             .endianness = KtxBundle::ENDIAN_DEFAULT,
             .glType = KtxBundle::R11F_G11F_B10F,
             .glTypeSize = 1,
-            .glFormat = KtxBundle::R11F_G11F_B10F,
+            .glFormat = KtxBundle::RGB,
             .glInternalFormat = KtxBundle::R11F_G11F_B10F,
             .glBaseInternalFormat = KtxBundle::R11F_G11F_B10F,
             .pixelWidth = dim,

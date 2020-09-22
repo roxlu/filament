@@ -72,6 +72,7 @@ class DebugServer;
 
 #include <chrono>
 #include <memory>
+#include <random>
 #include <unordered_map>
 
 namespace filament {
@@ -84,10 +85,6 @@ class Driver;
 class Program;
 } // namespace driver
 
-namespace fg {
-class ResourceAllocator;
-} // namespace fg
-
 class FFence;
 class FMaterialInstance;
 class FRenderer;
@@ -96,6 +93,7 @@ class FSwapChain;
 class FView;
 
 class DFG;
+class ResourceAllocator;
 
 /*
  * Concrete implementation of the Engine interface. This keeps track of all hardware resources
@@ -131,6 +129,14 @@ public:
 public:
     static FEngine* create(Backend backend = Backend::DEFAULT,
             Platform* platform = nullptr, void* sharedGLContext = nullptr);
+
+#if UTILS_HAS_THREADING
+    static void createAsync(CreateCallback callback, void* user,
+            Backend backend = Backend::DEFAULT,
+            Platform* platform = nullptr, void* sharedGLContext = nullptr);
+
+    static FEngine* getEngine(void* token);
+#endif
 
     static void destroy(FEngine* engine);
 
@@ -202,7 +208,7 @@ public:
         return mBackend;
     }
 
-    fg::ResourceAllocator& getResourceAllocator() noexcept {
+    ResourceAllocator& getResourceAllocator() noexcept {
         assert(mResourceAllocator);
         return *mResourceAllocator;
     }
@@ -296,6 +302,10 @@ public:
         return mJobSystem;
     }
 
+    std::default_random_engine& getRandomEngine() {
+        return mRandomEngine;
+    }
+
 private:
     FEngine(Backend backend, Platform* platform, void* sharedGLContext);
     void init();
@@ -328,7 +338,7 @@ private:
     FTransformManager mTransformManager;
     FLightManager mLightManager;
     FCameraManager mCameraManager;
-    fg::ResourceAllocator* mResourceAllocator = nullptr;
+    ResourceAllocator* mResourceAllocator = nullptr;
 
     ResourceList<FRenderer> mRenderers{ "Renderer" };
     ResourceList<FView> mViews{ "View" };
@@ -360,6 +370,8 @@ private:
     HeapAllocatorArena mHeapAllocator;
 
     utils::JobSystem mJobSystem;
+
+    std::default_random_engine mRandomEngine;
 
     Epoch mEngineEpoch;
 

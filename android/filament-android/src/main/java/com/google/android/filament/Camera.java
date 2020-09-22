@@ -277,6 +277,39 @@ public class Camera {
     }
 
     /**
+     * Sets an additional matrix that scales the projection matrix.
+     *
+     * <p>This is useful to adjust the aspect ratio of the camera independent from its projection.
+     * First, pass an aspect of 1.0 to setProjection. Then set the scaling with the desired aspect
+     * ratio:<br>
+     *
+     * <code>
+     *     double aspect = width / height;
+     *
+     *     // with Fov.HORIZONTAL passed to setProjection:
+     *     double[] s = {1.0, aspect, 1.0, 1.0};
+     *     camera.setScaling(s);
+     *
+     *     // with Fov.VERTICAL passed to setProjection:
+     *     double[] s = {1.0 / aspect, 1.0, 1.0, 1.0};
+     *     camera.setScaling(s);
+     * </code>
+     *
+     * By default, this is an identity matrix.
+     * </p>
+     *
+     * @param scaling     diagonal of the scaling matrix to be applied after the projection matrix.
+     *
+     * @see Camera#setProjection
+     * @see Camera#setLensProjection
+     * @see Camera#setCustomProjection
+     */
+    public void setScaling(@NonNull @Size(min = 4) double[] inScaling) {
+        Asserts.assertDouble4In(inScaling);
+        nSetScaling(getNativeObject(), inScaling);
+    }
+
+    /**
      * Sets the camera's view matrix.
      * <p>
      * Helper method to set the camera's entity transform component.
@@ -329,7 +362,9 @@ public class Camera {
     }
 
     /**
-     * Retrieves the camera's projection matrix.
+     * Retrieves the camera's projection matrix. The projection matrix used for rendering always has
+     * its far plane set to infinity. This is why it may differ from the matrix set through
+     * setProjection() or setLensProjection().
      *
      * @param out A 16-float array where the projection matrix will be stored, or null in which
      *            case a new array is allocated.
@@ -340,6 +375,36 @@ public class Camera {
     public double[] getProjectionMatrix(@Nullable @Size(min = 16) double[] out) {
         out = Asserts.assertMat4d(out);
         nGetProjectionMatrix(getNativeObject(), out);
+        return out;
+    }
+
+    /**
+     * Retrieves the camera's culling matrix. The culling matrix is the same as the projection
+     * matrix, except the far plane is finite.
+     *
+     * @param out A 16-float array where the projection matrix will be stored, or null in which
+     *            case a new array is allocated.
+     *
+     * @return A 16-float array containing the camera's projection as a column-major matrix.
+     */
+    @NonNull @Size(min = 16)
+    public double[] getCullingProjectionMatrix(@Nullable @Size(min = 16) double[] out) {
+        out = Asserts.assertMat4d(out);
+        nGetCullingProjectionMatrix(getNativeObject(), out);
+        return out;
+    }
+
+    /**
+     * Returns the scaling amount used to scale the projection matrix.
+     *
+     * @return the diagonal of the scaling matrix applied after the projection matrix.
+     *
+     * @see Camera#setScaling
+     */
+    @NonNull @Size(min = 4)
+    public double[] getScaling(@Nullable @Size(min = 4) double[] out) {
+        out = Asserts.assertDouble4(out);
+        nGetScaling(getNativeObject(), out);
         return out;
     }
 
@@ -521,11 +586,14 @@ public class Camera {
     private static native void nSetProjectionFov(long nativeCamera, double fovInDegrees, double aspect, double near, double far, int fov);
     private static native void nSetLensProjection(long nativeCamera, double focalLength, double aspect, double near, double far);
     private static native void nSetCustomProjection(long nativeCamera, double[] inMatrix, double near, double far);
+    private static native void nSetScaling(long nativeCamera, double[] inScaling);
     private static native void nSetModelMatrix(long nativeCamera, float[] in);
     private static native void nLookAt(long nativeCamera, double eyeX, double eyeY, double eyeZ, double centerX, double centerY, double centerZ, double upX, double upY, double upZ);
     private static native float nGetNear(long nativeCamera);
     private static native float nGetCullingFar(long nativeCamera);
     private static native void nGetProjectionMatrix(long nativeCamera, double[] out);
+    private static native void nGetCullingProjectionMatrix(long nativeCamera, double[] out);
+    private static native void nGetScaling(long nativeCamera, double[] out);
     private static native void nGetModelMatrix(long nativeCamera, float[] out);
     private static native void nGetViewMatrix(long nativeCamera, float[] out);
     private static native void nGetPosition(long nativeCamera, float[] out);

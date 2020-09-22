@@ -238,7 +238,7 @@ public:
 
     void swap(CString& other) noexcept {
         // don't use std::swap(), we don't want an STL dependency in this file
-        auto temp = mCStr;
+        auto *temp = mCStr;
         mCStr = other.mCStr;
         other.mCStr = temp;
     }
@@ -260,6 +260,7 @@ public:
     const_iterator cend() const noexcept { return end(); }
 
     CString& replace(size_type pos, size_type len, const CString& str) noexcept;
+    CString& insert(size_type pos, const CString& str) noexcept { return replace(pos, 0, str); }
 
     const_reference operator[](size_type pos) const noexcept {
         assert(pos < size());

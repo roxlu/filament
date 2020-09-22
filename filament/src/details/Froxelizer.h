@@ -56,11 +56,11 @@ public:
 
 //
 // Light UBO           Froxel Record Buffer     per-froxel light list texture
-// {4 x float4}         R_U8  {index into        RG_U16 {offset, point-count, spot-sount}
+// {4 x float4}         R_U8  {index into        RG_U16 {offset, point-count, spot-count}
 // (spot/point            light texture}
 //
 //  +----+                     +-+                     +----+
-// 0|....| <------------+     0| |         +-----------|0221| (e.g. offset=02, 2-point, 1-spot)
+// 0|....| <------------+     0| |         +-----------|0230| (e.g. offset=02, 3-lights)
 // 1|....|<--------+     \    1| |        /            |    |
 // 2:    :          \     +---2|0|<------+             |    |
 // 3:    : <-------- \--------3|3|                     :    :

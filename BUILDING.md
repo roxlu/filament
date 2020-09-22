@@ -17,9 +17,9 @@ section below.
 
 To build Filament for Android you must also install the following:
 
-- Android Studio 4.0 or more recent
+- Android Studio 4.0.1 or more recent
 - Android SDK
-- Android NDK "side-by-side" 21 or higher
+- Android NDK "side-by-side" 21.3 or higher
 
 ### Environment variables
 
@@ -86,10 +86,9 @@ The following CMake options are boolean options specific to Filament:
 - `FILAMENT_BUILD_FILAMAT`:        Build filamat and JNI buildings
 - `FILAMENT_SUPPORTS_METAL`:       Include the Metal backend
 - `FILAMENT_SUPPORTS_VULKAN`:      Include the Vulkan backend
-- `FILAMENT_GENERATE_JS_DOCS`:     Build WebGL documentation and tutorials
 - `FILAMENT_INSTALL_BACKEND_TEST`: Install the backend test library so it can be consumed on iOS
 - `FILAMENT_USE_EXTERNAL_GLES3`:   Experimental: Compile Filament against OpenGL ES 3
-- `FILAMENT_USE_SWIFTSHADER`:      Experimental: Compile Filament against SwiftShader
+- `FILAMENT_USE_SWIFTSHADER`:      Compile Filament against SwiftShader
 - `FILAMENT_SKIP_SAMPLES`:         Don't build sample apps
 
 To turn an option on or off:
@@ -205,9 +204,12 @@ Install the following components:
 The latest Windows SDK can also by installed by opening Visual Studio and selecting _Get Tools and
 Features..._ under the _Tools_ menu.
 
-Open the `x64 Native Tools Command Prompt for VS 2019`.
+By default, Windows treats the file system as case insensitive. Please do not enable case
+sensitivity in your repo, since this does not align with CMake expectations. This can be queried
+using `fsutil.exe file queryCaseSensitiveInfo`.
 
-Create a working directory, and run cmake in it:
+Next, open `x64 Native Tools Command Prompt for VS 2019`, create a working directory, and run
+CMake in it:
 
 ```
 > mkdir out
@@ -224,6 +226,13 @@ For example, build the `material_sandbox` sample and run it from the `out` direc
 
 ```
 > samples\Debug\material_sandbox.exe ..\assets\models\monkey\monkey.obj
+```
+
+You can also use CMake to invoke the build without opening Visual Studio. For example, from the
+`out` folder run the following command.
+
+```
+> cmake --build . --target gltf_viewer --config Release
 ```
 
 ### Android
@@ -366,7 +375,7 @@ same version that our continuous builds use.
 
 ```
 cd <your chosen parent folder for the emscripten SDK>
-curl -L https://github.com/emscripten-core/emsdk/archive/f5e21de.zip > emsdk.zip
+curl -L https://github.com/emscripten-core/emsdk/archive/1.39.19.zip > emsdk.zip
 unzip emsdk.zip ; mv emsdk-* emsdk ; cd emsdk
 python ./emsdk.py install latest
 python ./emsdk.py activate latest
@@ -445,3 +454,17 @@ $ doxygen docs/doxygen/filament.doxygen
 ```
 
 Finally simply open `docs/html/index.html` in your web browser.
+
+## SwiftShader
+
+To try out Filament's Vulkan support with SwiftShader, first build SwiftShader and set the
+`SWIFTSHADER_LD_LIBRARY_PATH` variable to the folder that contains `libvk_swiftshader.dylib`:
+
+```
+git clone https://github.com/google/swiftshader.git
+cd swiftshader/build
+cmake .. &&  make -j
+export SWIFTSHADER_LD_LIBRARY_PATH=`pwd`
+```
+
+Next, go to your Filament repo and use the [easy build](#easy-build) script with `-t`.

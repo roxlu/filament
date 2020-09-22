@@ -96,7 +96,7 @@ inline float rgb_2_hue(float3 rgb) {
     float hue = 0.0f;
     // RGB triplets where RGB are equal have an undefined hue
     if (!(rgb.x == rgb.y && rgb.y == rgb.z)) {
-        hue = (180.0f / float(F_PI)) * std::atan2(
+        hue = f::RAD_TO_DEG * std::atan2(
                 std::sqrt(3.0f) * (rgb.y - rgb.z),
                 2.0f * rgb.x - rgb.y - rgb.z);
     }
@@ -142,7 +142,7 @@ inline float3 ACES(float3 color, float brightness) {
     constexpr float RRT_RED_HUE   = 0.0f;
     constexpr float RRT_RED_WIDTH = 135.0f;
 
-    // Desaturation contants
+    // Desaturation constants
     constexpr float RRT_SAT_FACTOR = 0.96f;
     constexpr float ODT_SAT_FACTOR = 0.93f;
 

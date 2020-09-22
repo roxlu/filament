@@ -3,7 +3,9 @@ name: Windows
 on:
   push:
     branches:
-      - master
+      - main
+      - release
+      - rc/**
 
 jobs:
   build-windows:

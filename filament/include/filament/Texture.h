@@ -86,7 +86,7 @@ public:
 
 
     /**
-     * Options for enviornment prefiltering into reflection map
+     * Options for environment prefiltering into reflection map
      *
      * @see generatePrefilterMipmap()
      */
@@ -129,7 +129,7 @@ public:
          * effectively create a 3D texture.
          * @param depth Depth of the texture in texels (default: 1).
          * @return This Builder, for chaining calls.
-         * @attention This Texture instance must use Sampler::SAMPLER_2D_ARRAY or it has no effect.
+         * @attention This Texture instance must use Sampler::SAMPLER_3D or Sampler::SAMPLER_2D_ARRAY or it has no effect.
          */
         Builder& depth(uint32_t depth) noexcept;
 
@@ -201,6 +201,33 @@ public:
 
         /* no user serviceable parts below */
 
+        /**
+         * Specify a native texture to import as a Filament texture.
+         *
+         * The texture id is backend-specific:
+         *   - OpenGL: GLuint texture ID
+         *   - Metal: id<MTLTexture>
+         *
+         * With Metal, the id<MTLTexture> object should be cast to an intptr_t using
+         * CFBridgingRetain to transfer ownership to Filament. Filament will release ownership of
+         * the textue object when the Filament texture is destroyed.
+         *
+         * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~{.cpp}
+         *  id <MTLTexture> metalTexture = ...
+         *  filamentTexture->import((intptr_t) CFBridgingRetain(metalTexture));
+         *  // free to release metalTexture
+         *
+         *  // after using texture:
+         *  engine->destroy(filamentTexture);   // metalTexture is released
+         * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+         *
+         * @warning This method should be used as a last resort. This API is subject to change or
+         * removal.
+         *
+         * @param id a backend specific texture identifier
+         *
+         * @return This Builder, for chaining calls.
+         */
         Builder& import(intptr_t id) noexcept;
 
     private:
@@ -278,7 +305,7 @@ public:
      *
      * @see Builder::sampler()
      */
-    void setImage(Engine& engine, size_t level, PixelBufferDescriptor&& buffer) const noexcept;
+    void setImage(Engine& engine, size_t level, PixelBufferDescriptor&& buffer) const;
 
     /**
      * Updates a sub-image of a 2D texture for a level.
@@ -304,7 +331,32 @@ public:
      */
     void setImage(Engine& engine, size_t level,
             uint32_t xoffset, uint32_t yoffset, uint32_t width, uint32_t height,
-            PixelBufferDescriptor&& buffer) const noexcept;
+            PixelBufferDescriptor&& buffer) const;
+
+    /**
+     * Updates a sub-image of a 3D texture or 2D texture array for a level.
+     *
+     * @param engine    Engine this texture is associated to.
+     * @param level     Level to set the image for.
+     * @param xoffset   Left offset of the sub-region to update.
+     * @param yoffset   Bottom offset of the sub-region to update.
+     * @param zoffset   Depth offset of the sub-region to update.
+     * @param width     Width of the sub-region to update.
+     * @param height    Height of the sub-region to update.
+     * @param depth     Depth of the sub-region to update.
+     * @param buffer    Client-side buffer containing the image to set.
+     *
+     * @attention \p engine must be the instance passed to Builder::build()
+     * @attention \p level must be less than getLevels().
+     * @attention \p buffer's Texture::Format must match that of getFormat().
+     * @attention This Texture instance must use Sampler::SAMPLER_3D or Sampler::SAMPLER_2D_array.
+     *
+     * @see Builder::sampler()
+     */
+    void setImage(Engine& engine, size_t level,
+            uint32_t xoffset, uint32_t yoffset, uint32_t zoffset,
+            uint32_t width, uint32_t height, uint32_t depth,
+            PixelBufferDescriptor&& buffer) const;
 
     /**
      * Specify all six images of a cube map level.
@@ -325,7 +377,7 @@ public:
      * @see Texture::CubemapFace, Builder::sampler()
      */
     void setImage(Engine& engine, size_t level,
-            PixelBufferDescriptor&& buffer, const FaceOffsets& faceOffsets) const noexcept;
+            PixelBufferDescriptor&& buffer, const FaceOffsets& faceOffsets) const;
 
 
     /**

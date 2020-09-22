@@ -31,7 +31,7 @@ NoopDriver::NoopDriver() noexcept : DriverBase(new ConcreteDispatcher<NoopDriver
 NoopDriver::~NoopDriver() noexcept = default;
 
 backend::ShaderModel NoopDriver::getShaderModel() const noexcept {
-#if defined(ANDROID) || defined(IOS)
+#if defined(ANDROID) || defined(IOS) || defined(__EMSCRIPTEN__)
     return ShaderModel::GL_ES_30;
 #else
     return ShaderModel::GL_CORE_41;
@@ -151,6 +151,10 @@ bool NoopDriver::isFrameTimeSupported() {
     return true;
 }
 
+math::float2 NoopDriver::getClipSpaceParams() {
+    return math::float2{ -1.0f, 0.0f };
+}
+
 void NoopDriver::updateVertexBuffer(Handle<HwVertexBuffer> vbh, size_t index,
         BufferDescriptor&& p, uint32_t byteOffset) {
     scheduleDestroy(std::move(p));
@@ -220,6 +224,9 @@ void NoopDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassPar
 }
 
 void NoopDriver::endRenderPass(int) {
+}
+
+void NoopDriver::nextSubpass(int) {
 }
 
 void NoopDriver::setRenderPrimitiveBuffer(Handle<HwRenderPrimitive> rph,

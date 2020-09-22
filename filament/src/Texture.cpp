@@ -144,7 +144,7 @@ FTexture::FTexture(FEngine& engine, const Builder& builder) {
 
     FEngine::DriverApi& driver = engine.getDriverApi();
     if (UTILS_LIKELY(builder->mImportedId == 0)) {
-        if (UTILS_LIKELY(builder->mTextureIsSwizzled)) {
+        if (UTILS_LIKELY(!builder->mTextureIsSwizzled)) {
             mHandle = driver.createTexture(
                     mTarget, mLevelCount, mFormat, mSampleCount, mWidth, mHeight, mDepth, mUsage);
         } else {
@@ -179,23 +179,179 @@ size_t FTexture::getDepth(size_t level) const noexcept {
 
 void FTexture::setImage(FEngine& engine,
         size_t level, uint32_t xoffset, uint32_t yoffset, uint32_t width, uint32_t height,
-        Texture::PixelBufferDescriptor&& buffer) const noexcept {
-    if (!mStream && mTarget != Sampler::SAMPLER_CUBEMAP && level < mLevelCount) {
-        if (buffer.buffer) {
-            engine.getDriverApi().update2DImage(mHandle,
-                    uint8_t(level), xoffset, yoffset, width, height, std::move(buffer));
+        Texture::PixelBufferDescriptor&& buffer) const {
+
+    auto validateTarget = [](SamplerType sampler) -> bool {
+        switch (sampler) {
+            case SamplerType::SAMPLER_2D:
+            case SamplerType::SAMPLER_EXTERNAL:
+                return true;
+            case SamplerType::SAMPLER_CUBEMAP:
+            case SamplerType::SAMPLER_3D:
+            case SamplerType::SAMPLER_2D_ARRAY:
+                return false;
         }
+    };
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(buffer.type == PixelDataType::COMPRESSED ||
+                         validatePixelFormatAndType(mFormat, buffer.format, buffer.type),
+            "The combination of internal format=%u and {format=%u, type=%u} is not supported.",
+            unsigned(mFormat), unsigned(buffer.format), unsigned(buffer.type))) {
+        return;
     }
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(!mStream, "setImage() called on a Stream texture.")) {
+        return;
+    }
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(level < mLevelCount,
+            "level=%u is >= to levelCount=%u.", unsigned(level), unsigned(mLevelCount))) {
+        return;
+    }
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(validateTarget(mTarget),
+            "Texture Sampler type (%u) not supported for this operation.", unsigned(mTarget))) {
+        return;
+    }
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(buffer.buffer, "Data buffer is nullptr.")) {
+        return;
+    }
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(mSampleCount <= 1,
+            "Operation not supported with multisample (%u) texture.", unsigned(mSampleCount))) {
+        return;
+    }
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(xoffset + width <= valueForLevel(level, mWidth),
+            "xoffset (%u) + width (%u) > texture width (%u) at level (%u)",
+            unsigned(xoffset), unsigned(width), unsigned(valueForLevel(level, mWidth)), unsigned(level))) {
+        return;
+    }
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(yoffset + height <= valueForLevel(level, mHeight),
+            "xoffset (%u) + width (%u) > texture width (%u) at level (%u)",
+            unsigned(yoffset), unsigned(height), unsigned(valueForLevel(level, mHeight)), unsigned(level))) {
+        return;
+    }
+
+    engine.getDriverApi().update2DImage(mHandle,
+            uint8_t(level), xoffset, yoffset, width, height, std::move(buffer));
+}
+
+void FTexture::setImage(FEngine& engine,
+        size_t level, uint32_t xoffset, uint32_t yoffset, uint32_t zoffset,
+        uint32_t width, uint32_t height, uint32_t depth,
+        Texture::PixelBufferDescriptor&& buffer) const {
+
+    auto validateTarget = [](SamplerType sampler) -> bool {
+        switch (sampler) {
+            case SamplerType::SAMPLER_3D:
+            case SamplerType::SAMPLER_2D_ARRAY:
+                return true;
+            case SamplerType::SAMPLER_2D:
+            case SamplerType::SAMPLER_EXTERNAL:
+            case SamplerType::SAMPLER_CUBEMAP:
+                return false;
+        }
+    };
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(buffer.type == PixelDataType::COMPRESSED ||
+                         validatePixelFormatAndType(mFormat, buffer.format, buffer.type),
+            "The combination of internal format=%u and {format=%u, type=%u} is not supported.",
+            unsigned(mFormat), unsigned(buffer.format), unsigned(buffer.type))) {
+        return;
+    }
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(!mStream, "setImage() called on a Stream texture.")) {
+        return;
+    }
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(level < mLevelCount,
+            "level=%u is >= to levelCount=%u.", unsigned(level), unsigned(mLevelCount))) {
+        return;
+    }
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(validateTarget(mTarget),
+            "Texture Sampler type (%u) not supported for this operation.", unsigned(mTarget))) {
+        return;
+    }
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(mSampleCount <= 1,
+            "Operation not supported with multisample (%u) texture.", unsigned(mSampleCount))) {
+        return;
+    }
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(xoffset + width <= valueForLevel(level, mWidth),
+            "xoffset (%u) + width (%u) > texture width (%u) at level (%u)",
+            unsigned(xoffset), unsigned(width), unsigned(valueForLevel(level, mWidth)), unsigned(level))) {
+        return;
+    }
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(yoffset + height <= valueForLevel(level, mHeight),
+            "yoffset (%u) + height (%u) > texture height (%u) at level (%u)",
+            unsigned(yoffset), unsigned(height), unsigned(valueForLevel(level, mHeight)), unsigned(level))) {
+        return;
+    }
+
+    // effective level is just how we compute the index/depth based on whether we're an array or a 3D texture
+    const uint8_t effectiveLevel = mTarget == SamplerType::SAMPLER_3D ? level : 0;
+    if (!ASSERT_POSTCONDITION_NON_FATAL(zoffset + depth <= valueForLevel(effectiveLevel, mDepth),
+            "zoffset (%u) + depth (%u) > texture depth (%u) at level (%u)",
+            unsigned(zoffset), unsigned(depth), unsigned(valueForLevel(effectiveLevel, mDepth)), unsigned(level))) {
+        return;
+    }
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(buffer.buffer, "Data buffer is nullptr.")) {
+        return;
+    }
+
+    engine.getDriverApi().update3DImage(mHandle,
+            uint8_t(level), xoffset, yoffset, zoffset, width, height, depth, std::move(buffer));
 }
 
 void FTexture::setImage(FEngine& engine, size_t level,
-        Texture::PixelBufferDescriptor&& buffer, const FaceOffsets& faceOffsets) const noexcept {
-    if (!mStream && mTarget == Sampler::SAMPLER_CUBEMAP && level < mLevelCount) {
-        if (buffer.buffer) {
-            engine.getDriverApi().updateCubeImage(mHandle, uint8_t(level),
-                    std::move(buffer), faceOffsets);
+        Texture::PixelBufferDescriptor&& buffer, const FaceOffsets& faceOffsets) const {
+
+    auto validateTarget = [](SamplerType sampler) -> bool {
+        switch (sampler) {
+            case SamplerType::SAMPLER_CUBEMAP:
+                return true;
+            case SamplerType::SAMPLER_3D:
+            case SamplerType::SAMPLER_2D_ARRAY:
+            case SamplerType::SAMPLER_2D:
+            case SamplerType::SAMPLER_EXTERNAL:
+                return false;
         }
+    };
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(buffer.type == PixelDataType::COMPRESSED ||
+                        validatePixelFormatAndType(mFormat, buffer.format, buffer.type),
+            "The combination of internal format=%u and {format=%u, type=%u} is not supported.",
+            unsigned(mFormat), unsigned(buffer.format), unsigned(buffer.type))) {
+        return;
     }
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(!mStream, "setImage() called on a Stream texture.")) {
+        return;
+    }
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(level < mLevelCount,
+            "level=%u is >= to levelCount=%u.", unsigned(level), unsigned(mLevelCount))) {
+        return;
+    }
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(validateTarget(mTarget),
+            "Texture Sampler type (%u) not supported for this operation.", unsigned(mTarget))) {
+        return;
+    }
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(buffer.buffer, "Data buffer is nullptr.")) {
+        return;
+    }
+
+    engine.getDriverApi().updateCubeImage(mHandle, uint8_t(level),
+            std::move(buffer), faceOffsets);
 }
 
 void FTexture::setExternalImage(FEngine& engine, void* image) noexcept {
@@ -495,6 +651,370 @@ void FTexture::generatePrefilterMipmap(FEngine& engine,
     // by the caller (without being move()d here).
 }
 
+bool FTexture::validatePixelFormatAndType(TextureFormat internalFormat,
+        PixelDataFormat format, PixelDataType type) noexcept {
+
+    switch (internalFormat) {
+        case TextureFormat::R8:
+        case TextureFormat::R8_SNORM:
+        case TextureFormat::R16F:
+        case TextureFormat::R32F:
+            if (format != PixelDataFormat::R) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::R8UI:
+        case TextureFormat::R8I:
+        case TextureFormat::R16UI:
+        case TextureFormat::R16I:
+        case TextureFormat::R32UI:
+        case TextureFormat::R32I:
+            if (format != PixelDataFormat::R_INTEGER) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::RG8:
+        case TextureFormat::RG8_SNORM:
+        case TextureFormat::RG16F:
+        case TextureFormat::RG32F:
+            if (format != PixelDataFormat::RG) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::RG8UI:
+        case TextureFormat::RG8I:
+        case TextureFormat::RG16UI:
+        case TextureFormat::RG16I:
+        case TextureFormat::RG32UI:
+        case TextureFormat::RG32I:
+            if (format != PixelDataFormat::RG_INTEGER) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::RGB565:
+        case TextureFormat::RGB9_E5:
+        case TextureFormat::RGB5_A1:
+        case TextureFormat::RGBA4:
+        case TextureFormat::RGB8:
+        case TextureFormat::SRGB8:
+        case TextureFormat::RGB8_SNORM:
+        case TextureFormat::R11F_G11F_B10F:
+        case TextureFormat::RGB16F:
+        case TextureFormat::RGB32F:
+            if (format != PixelDataFormat::RGB) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::RGB8UI:
+        case TextureFormat::RGB8I:
+        case TextureFormat::RGB16UI:
+        case TextureFormat::RGB16I:
+        case TextureFormat::RGB32UI:
+        case TextureFormat::RGB32I:
+            if (format != PixelDataFormat::RGB_INTEGER) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::RGBA8:
+        case TextureFormat::SRGB8_A8:
+        case TextureFormat::RGBA8_SNORM:
+        case TextureFormat::RGB10_A2:
+        case TextureFormat::RGBA16F:
+        case TextureFormat::RGBA32F:
+            if (format != PixelDataFormat::RGBA) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::RGBA8UI:
+        case TextureFormat::RGBA8I:
+        case TextureFormat::RGBA16UI:
+        case TextureFormat::RGBA16I:
+        case TextureFormat::RGBA32UI:
+        case TextureFormat::RGBA32I:
+            if (format != PixelDataFormat::RGBA_INTEGER) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::STENCIL8:
+            // there is no pixel data type that can be used for this format
+            return false;
+
+        case TextureFormat::DEPTH16:
+        case TextureFormat::DEPTH24:
+        case TextureFormat::DEPTH32F:
+            if (format != PixelDataFormat::DEPTH_COMPONENT) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::DEPTH24_STENCIL8:
+        case TextureFormat::DEPTH32F_STENCIL8:
+            if (format != PixelDataFormat::DEPTH_STENCIL) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::UNUSED:
+        case TextureFormat::EAC_R11:
+        case TextureFormat::EAC_R11_SIGNED:
+        case TextureFormat::EAC_RG11:
+        case TextureFormat::EAC_RG11_SIGNED:
+        case TextureFormat::ETC2_RGB8:
+        case TextureFormat::ETC2_SRGB8:
+        case TextureFormat::ETC2_RGB8_A1:
+        case TextureFormat::ETC2_SRGB8_A1:
+        case TextureFormat::ETC2_EAC_RGBA8:
+        case TextureFormat::ETC2_EAC_SRGBA8:
+        case TextureFormat::DXT1_RGB:
+        case TextureFormat::DXT1_RGBA:
+        case TextureFormat::DXT3_RGBA:
+        case TextureFormat::DXT5_RGBA:
+        case TextureFormat::DXT1_SRGB:
+        case TextureFormat::DXT1_SRGBA:
+        case TextureFormat::DXT3_SRGBA:
+        case TextureFormat::DXT5_SRGBA:
+        case TextureFormat::RGBA_ASTC_4x4:
+        case TextureFormat::RGBA_ASTC_5x4:
+        case TextureFormat::RGBA_ASTC_5x5:
+        case TextureFormat::RGBA_ASTC_6x5:
+        case TextureFormat::RGBA_ASTC_6x6:
+        case TextureFormat::RGBA_ASTC_8x5:
+        case TextureFormat::RGBA_ASTC_8x6:
+        case TextureFormat::RGBA_ASTC_8x8:
+        case TextureFormat::RGBA_ASTC_10x5:
+        case TextureFormat::RGBA_ASTC_10x6:
+        case TextureFormat::RGBA_ASTC_10x8:
+        case TextureFormat::RGBA_ASTC_10x10:
+        case TextureFormat::RGBA_ASTC_12x10:
+        case TextureFormat::RGBA_ASTC_12x12:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_4x4:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_5x4:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_5x5:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_6x5:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_6x6:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_8x5:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_8x6:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_8x8:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_10x5:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_10x6:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_10x8:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_10x10:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_12x10:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_12x12:
+            return false;
+    }
+
+    switch (internalFormat) {
+        case TextureFormat::R8:
+        case TextureFormat::R8UI:
+        case TextureFormat::RG8:
+        case TextureFormat::RG8UI:
+        case TextureFormat::RGB8:
+        case TextureFormat::SRGB8:
+        case TextureFormat::RGB8UI:
+        case TextureFormat::RGBA8:
+        case TextureFormat::SRGB8_A8:
+        case TextureFormat::RGBA8UI:
+            if (type != PixelDataType::UBYTE) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::R8_SNORM:
+        case TextureFormat::R8I:
+        case TextureFormat::RG8_SNORM:
+        case TextureFormat::RG8I:
+        case TextureFormat::RGB8_SNORM:
+        case TextureFormat::RGB8I:
+        case TextureFormat::RGBA8_SNORM:
+        case TextureFormat::RGBA8I:
+            if (type != PixelDataType::BYTE) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::R16F:
+        case TextureFormat::RG16F:
+        case TextureFormat::RGB16F:
+        case TextureFormat::RGBA16F:
+            if (type != PixelDataType::FLOAT && type != PixelDataType::HALF) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::R32F:
+        case TextureFormat::RG32F:
+        case TextureFormat::RGB32F:
+        case TextureFormat::RGBA32F:
+        case TextureFormat::DEPTH32F:
+            if (type != PixelDataType::FLOAT) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::R16UI:
+        case TextureFormat::RG16UI:
+        case TextureFormat::RGB16UI:
+        case TextureFormat::RGBA16UI:
+            if (type != PixelDataType::USHORT) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::R16I:
+        case TextureFormat::RG16I:
+        case TextureFormat::RGB16I:
+        case TextureFormat::RGBA16I:
+            if (type != PixelDataType::SHORT) {
+                return false;
+            }
+            break;
+
+
+        case TextureFormat::R32UI:
+        case TextureFormat::RG32UI:
+        case TextureFormat::RGB32UI:
+        case TextureFormat::RGBA32UI:
+            if (type != PixelDataType::UINT) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::R32I:
+        case TextureFormat::RG32I:
+        case TextureFormat::RGB32I:
+        case TextureFormat::RGBA32I:
+            if (type != PixelDataType::INT) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::RGB565:
+            if (type != PixelDataType::UBYTE && type != PixelDataType::USHORT_565) {
+                return false;
+            }
+            break;
+
+
+        case TextureFormat::RGB9_E5:
+            // TODO: we're missing UINT_5_9_9_9_REV
+            if (type != PixelDataType::FLOAT && type != PixelDataType::HALF) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::RGB5_A1:
+            // TODO: we're missing USHORT_5_5_5_1
+            if (type != PixelDataType::UBYTE && type != PixelDataType::UINT_2_10_10_10_REV) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::RGBA4:
+            // TODO: we're missing USHORT_4_4_4_4
+            if (type != PixelDataType::UBYTE) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::R11F_G11F_B10F:
+            if (type != PixelDataType::FLOAT && type != PixelDataType::HALF
+                && type != PixelDataType::UINT_10F_11F_11F_REV) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::RGB10_A2:
+            if (type != PixelDataType::UINT_2_10_10_10_REV) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::STENCIL8:
+            // there is no pixel data type that can be used for this format
+            return false;
+
+        case TextureFormat::DEPTH16:
+            if (type != PixelDataType::UINT && type != PixelDataType::USHORT) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::DEPTH24:
+            if (type != PixelDataType::UINT) {
+                return false;
+            }
+            break;
+
+        case TextureFormat::DEPTH24_STENCIL8:
+            // TODO: we're missing UINT_24_8
+            return false;
+
+        case TextureFormat::DEPTH32F_STENCIL8:
+            // TODO: we're missing FLOAT_UINT_24_8_REV
+            return false;
+
+        case TextureFormat::UNUSED:
+        case TextureFormat::EAC_R11:
+        case TextureFormat::EAC_R11_SIGNED:
+        case TextureFormat::EAC_RG11:
+        case TextureFormat::EAC_RG11_SIGNED:
+        case TextureFormat::ETC2_RGB8:
+        case TextureFormat::ETC2_SRGB8:
+        case TextureFormat::ETC2_RGB8_A1:
+        case TextureFormat::ETC2_SRGB8_A1:
+        case TextureFormat::ETC2_EAC_RGBA8:
+        case TextureFormat::ETC2_EAC_SRGBA8:
+        case TextureFormat::DXT1_RGB:
+        case TextureFormat::DXT1_RGBA:
+        case TextureFormat::DXT3_RGBA:
+        case TextureFormat::DXT5_RGBA:
+        case TextureFormat::DXT1_SRGB:
+        case TextureFormat::DXT1_SRGBA:
+        case TextureFormat::DXT3_SRGBA:
+        case TextureFormat::DXT5_SRGBA:
+        case TextureFormat::RGBA_ASTC_4x4:
+        case TextureFormat::RGBA_ASTC_5x4:
+        case TextureFormat::RGBA_ASTC_5x5:
+        case TextureFormat::RGBA_ASTC_6x5:
+        case TextureFormat::RGBA_ASTC_6x6:
+        case TextureFormat::RGBA_ASTC_8x5:
+        case TextureFormat::RGBA_ASTC_8x6:
+        case TextureFormat::RGBA_ASTC_8x8:
+        case TextureFormat::RGBA_ASTC_10x5:
+        case TextureFormat::RGBA_ASTC_10x6:
+        case TextureFormat::RGBA_ASTC_10x8:
+        case TextureFormat::RGBA_ASTC_10x10:
+        case TextureFormat::RGBA_ASTC_12x10:
+        case TextureFormat::RGBA_ASTC_12x12:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_4x4:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_5x4:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_5x5:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_6x5:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_6x6:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_8x5:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_8x6:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_8x8:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_10x5:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_10x6:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_10x8:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_10x10:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_12x10:
+        case TextureFormat::SRGB8_ALPHA8_ASTC_12x12:
+            return false;
+    }
+
+    return true;
+}
+
 // ------------------------------------------------------------------------------------------------
 // Trampoline calling into private implementation
 // ------------------------------------------------------------------------------------------------
@@ -524,20 +1044,29 @@ Texture::InternalFormat Texture::getFormat() const noexcept {
 }
 
 void Texture::setImage(Engine& engine, size_t level,
-        Texture::PixelBufferDescriptor&& buffer) const noexcept {
+        Texture::PixelBufferDescriptor&& buffer) const {
     upcast(this)->setImage(upcast(engine),
-            level, 0, 0, uint32_t(getWidth(level)), uint32_t(getHeight(level)), std::move(buffer));
+            level, 0, 0,
+            uint32_t(getWidth(level)), uint32_t(getHeight(level)), std::move(buffer));
 }
 
 void Texture::setImage(Engine& engine,
         size_t level, uint32_t xoffset, uint32_t yoffset, uint32_t width, uint32_t height,
-        PixelBufferDescriptor&& buffer) const noexcept {
+        PixelBufferDescriptor&& buffer) const {
     upcast(this)->setImage(upcast(engine),
             level, xoffset, yoffset, width, height, std::move(buffer));
 }
 
 void Texture::setImage(Engine& engine, size_t level,
-        Texture::PixelBufferDescriptor&& buffer, const FaceOffsets& faceOffsets) const noexcept {
+        uint32_t xoffset, uint32_t yoffset, uint32_t zoffset,
+        uint32_t width, uint32_t height, uint32_t depth,
+        PixelBufferDescriptor&& buffer) const {
+    upcast(this)->setImage(upcast(engine),
+            level, xoffset, yoffset, zoffset, width, height, depth, std::move(buffer));
+}
+
+void Texture::setImage(Engine& engine, size_t level,
+        Texture::PixelBufferDescriptor&& buffer, const FaceOffsets& faceOffsets) const {
     upcast(this)->setImage(upcast(engine), level, std::move(buffer), faceOffsets);
 }
 

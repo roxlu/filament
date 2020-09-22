@@ -57,6 +57,21 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugReportCallback(VkDebugReportFlagsEXT flags,
     return VK_FALSE;
 }
 
+VKAPI_ATTR VkBool32 VKAPI_CALL debugUtilsCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+        VkDebugUtilsMessageTypeFlagsEXT types, const VkDebugUtilsMessengerCallbackDataEXT* cbdata,
+        void* pUserData) {
+    if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+        utils::slog.e << "VULKAN ERROR: (" << cbdata->pMessageIdName << ") "
+                << cbdata->pMessage << utils::io::endl;
+        utils::debug_trap();
+    } else {
+        utils::slog.w << "VULKAN WARNING: (" << cbdata->pMessageIdName << ") "
+                << cbdata->pMessage << utils::io::endl;
+    }
+    // Return TRUE here if an abort is desired.
+    return VK_FALSE;
+}
+
 }
 
 #endif
@@ -140,7 +155,25 @@ VulkanDriver::VulkanDriver(VulkanPlatform* platform,
             vkCreateDebugReportCallbackEXT;
 
 #if VK_ENABLE_VALIDATION
-    if (createDebugReportCallback) {
+
+    // We require the VK_EXT_debug_utils instance extension on all non-Android platforms when
+    // validation is enabled.
+    #ifndef ANDROID
+    mContext.debugUtilsSupported = true;
+    #endif
+
+    if (mContext.debugUtilsSupported) {
+        VkDebugUtilsMessengerCreateInfoEXT createInfo = {
+            .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+            .pNext = nullptr,
+            .flags = 0,
+            .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+            .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT,
+            .pfnUserCallback = debugUtilsCallback
+        };
+        result = vkCreateDebugUtilsMessengerEXT(mContext.instance, &createInfo, VKALLOC, &mDebugMessenger);
+        ASSERT_POSTCONDITION(result == VK_SUCCESS, "Unable to create Vulkan debug messenger.");
+    } else if (createDebugReportCallback) {
         const VkDebugReportCallbackCreateInfoEXT cbinfo = {
             VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT,
             nullptr,
@@ -158,14 +191,34 @@ VulkanDriver::VulkanDriver(VulkanPlatform* platform,
     selectPhysicalDevice(mContext);
 
     // Initialize device and graphicsQueue.
-    createVirtualDevice(mContext);
+    createLogicalDevice(mContext);
     mBinder.setDevice(mContext.device);
 
     // Choose a depth format that meets our requirements. Take care not to include stencil formats
     // just yet, since that would require a corollary change to the "aspect" flags for the VkImage.
-    mContext.depthFormat = findSupportedFormat(mContext,
+    mContext.finalDepthFormat = findSupportedFormat(mContext,
         { VK_FORMAT_D32_SFLOAT, VK_FORMAT_X8_D24_UNORM_PACK32 },
         VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+
+    // For diagnostic purposes, print useful information about available depth formats.
+    // Note that Vulkan is more constrained than OpenGL ES 3.1 in this area.
+#if VK_ENABLE_VALIDATION
+    const VkFormatFeatureFlags required = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
+            VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+    utils::slog.i << "Sampleable depth formats: ";
+    for (VkFormat format = (VkFormat) 1;;) {
+        VkFormatProperties props;
+        vkGetPhysicalDeviceFormatProperties(mContext.physicalDevice, format, &props);
+        if ((props.optimalTilingFeatures & required) == required) {
+            utils::slog.i << format << " ";
+        }
+        if (format == VK_FORMAT_ASTC_12x12_SRGB_BLOCK) {
+            utils::slog.i << utils::io::endl;
+            break;
+        }
+        format = (VkFormat) (1 + (int) format);
+    }
+#endif
 }
 
 VulkanDriver::~VulkanDriver() noexcept = default;
@@ -216,6 +269,9 @@ void VulkanDriver::terminate() {
     if (mDebugCallback) {
         vkDestroyDebugReportCallbackEXT(mContext.instance, mDebugCallback, VKALLOC);
     }
+    if (mDebugMessenger) {
+        vkDestroyDebugUtilsMessengerEXT(mContext.instance, mDebugMessenger, VKALLOC);
+    }
     vkDestroyInstance(mContext.instance, VKALLOC);
     mContext.device = nullptr;
     mContext.instance = nullptr;
@@ -249,14 +305,36 @@ void VulkanDriver::beginFrame(int64_t monotonic_clock_ns, uint32_t frameId,
     acquireWorkCommandBuffer(mContext);
     mDisposer.release(mContext.work.resources);
 
-    // It might take several attempts to acquire a swap chain that is not marked as "out of date".
+    // With MoltenVK, it might take several attempts to acquire a swap chain that is not marked as
+    // "out of date" after a resize event.
     int attempts = 0;
     while (!acquireSwapCommandBuffer(mContext)) {
         refreshSwapChain();
         if (attempts++ > SWAP_CHAIN_MAX_ATTEMPTS) {
-            PANIC_POSTCONDITION("Unable to acquire optimal image from swap chain.");
+            PANIC_POSTCONDITION("Unable to acquire image from swap chain.");
         }
     }
+
+    #ifdef ANDROID
+    // Polling VkSurfaceCapabilitiesKHR is the most reliable way to detect a rotation change on
+    // Android. Checking for VK_SUBOPTIMAL_KHR is not sufficient on pre-Android 10 devices. Even
+    // on Android 10, we cannot rely on SUBOPTIMAL because we always use IDENTITY for the
+    // preTransform field in VkSwapchainCreateInfoKHR (see other comment in createSwapChain).
+    //
+    // NOTE: we support apps that have "orientation|screenSize" enabled in android:configChanges.
+    //
+    // NOTE: we poll the currentExtent rather than currentTransform. The transform seems to change
+    // before the extent (on a Pixel 4 anyway), which causes us to create a badly sized VkSwapChain.
+    const VulkanSurfaceContext* surface = mContext.currentSurface;
+    VkSurfaceCapabilitiesKHR caps;
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(mContext.physicalDevice, surface->surface, &caps);
+    const VkExtent2D previous = surface->surfaceCapabilities.currentExtent;
+    const VkExtent2D current = caps.currentExtent;
+    if (current.width != previous.width || current.height != previous.height) {
+        refreshSwapChain();
+        acquireSwapCommandBuffer(mContext);
+    }
+    #endif
 
     mDisposer.release(mContext.currentCommands->resources);
 
@@ -423,10 +501,28 @@ void VulkanDriver::createDefaultRenderTargetR(Handle<HwRenderTarget> rth, int) {
 void VulkanDriver::createRenderTargetR(Handle<HwRenderTarget> rth,
         TargetBufferFlags targets, uint32_t width, uint32_t height, uint8_t samples,
         backend::MRT color, TargetBufferInfo depth, TargetBufferInfo stencil) {
-    auto colorTexture = color[0].handle ? handle_cast<VulkanTexture>(mHandleMap, color[0].handle) : nullptr;
-    auto depthTexture = depth.handle ? handle_cast<VulkanTexture>(mHandleMap, depth.handle) : nullptr;
+    VulkanAttachment colorTargets[MRT::TARGET_COUNT] = {};
+    for (int i = 0; i < MRT::TARGET_COUNT; i++) {
+        if (color[i].handle) {
+            colorTargets[i].texture = handle_cast<VulkanTexture>(mHandleMap, color[i].handle);
+        }
+        colorTargets[i].level = color[i].level;
+        colorTargets[i].layer = color[i].layer;
+    }
+
+    VulkanAttachment depthStencil[2] = {};
+    TextureHandle handle = depth.handle;
+    depthStencil[0].texture = handle ? handle_cast<VulkanTexture>(mHandleMap, handle) : nullptr;
+    depthStencil[0].level = depth.level;
+    depthStencil[0].layer = depth.layer;
+
+    handle = stencil.handle;
+    depthStencil[1].texture = handle ? handle_cast<VulkanTexture>(mHandleMap, handle) : nullptr;
+    depthStencil[1].level = stencil.level;
+    depthStencil[1].layer = stencil.layer;
+
     auto renderTarget = construct_handle<VulkanRenderTarget>(mHandleMap, rth, mContext,
-            width, height, color[0], colorTexture, depth, depthTexture);
+            width, height, samples, colorTargets, depthStencil, mStagePool);
     mDisposer.createDisposable(renderTarget, [this, rth] () {
         destruct_handle<VulkanRenderTarget>(mHandleMap, rth);
     });
@@ -462,7 +558,6 @@ void VulkanDriver::createSwapChainR(Handle<HwSwapChain> sch, void* nativeWindow,
     sc.suboptimal = false;
     sc.surface = (VkSurfaceKHR) mContextManager.createVkSurfaceKHR(nativeWindow, mContext.instance);
     sc.nativeWindow = nativeWindow;
-    mContextManager.getClientExtent(nativeWindow, &sc.clientSize.width, &sc.clientSize.height);
     getPresentationQueue(mContext, sc);
     createSwapChain(mContext, sc);
 
@@ -641,6 +736,9 @@ FenceStatus VulkanDriver::wait(Handle<HwFence> fh, uint64_t timeout) {
     } else {
         lock.unlock();
     }
+    if (cmdfence->swapChainDestroyed) {
+        return FenceStatus::ERROR;
+    }
     VkResult result = vkWaitForFences(mContext.device, 1, &cmdfence->fence, VK_FALSE, timeout);
     return result == VK_SUCCESS ? FenceStatus::CONDITION_SATISFIED : FenceStatus::TIMEOUT_EXPIRED;
 }
@@ -652,7 +750,7 @@ bool VulkanDriver::isTextureFormatSupported(TextureFormat format) {
     VkFormat vkformat = getVkFormat(format);
     // We automatically use an alternative format when the client requests DEPTH24.
     if (format == TextureFormat::DEPTH24) {
-        vkformat = mContext.depthFormat;
+        vkformat = mContext.finalDepthFormat;
     }
     if (vkformat == VK_FORMAT_UNDEFINED) {
         return false;
@@ -680,7 +778,7 @@ bool VulkanDriver::isRenderTargetFormatSupported(TextureFormat format) {
     VkFormat vkformat = getVkFormat(format);
     // We automatically use an alternative format when the client requests DEPTH24.
     if (format == TextureFormat::DEPTH24) {
-        vkformat = mContext.depthFormat;
+        vkformat = mContext.finalDepthFormat;
     }
     if (vkformat == VK_FORMAT_UNDEFINED) {
         return false;
@@ -691,11 +789,16 @@ bool VulkanDriver::isRenderTargetFormatSupported(TextureFormat format) {
 }
 
 bool VulkanDriver::isFrameBufferFetchSupported() {
-    return false;
+    return true;
 }
 
 bool VulkanDriver::isFrameTimeSupported() {
     return true;
+}
+
+math::float2 VulkanDriver::getClipSpaceParams() {
+    // z-coordinate of clip-space is in [0,w]
+    return math::float2{ -0.5f, 0.5f };
 }
 
 void VulkanDriver::updateVertexBuffer(Handle<HwVertexBuffer> vbh, size_t index,
@@ -748,14 +851,19 @@ bool VulkanDriver::getTimerQueryValue(Handle<HwTimerQuery> tqh, uint64_t* elapse
     // This is a synchronous call and might occur before beginTimerQuery has written anything into
     // the command buffer, which is an error according to the validation layer that ships in the
     // Android NDK.  Even when AVAILABILITY_BIT is set, validation seems to require that the
-    // timestamp has at least been written into the command buffer.
-    if (!vtq->ready.load()) {
+    // timestamp has at least been written into a processed command buffer.
+    VulkanCommandBuffer* cmdbuf = vtq->cmdbuffer.load();
+    if (!cmdbuf || !cmdbuf->fence) {
+        return false;
+    }
+    VkResult status = cmdbuf->fence->status.load(std::memory_order_relaxed);
+    if (status != VK_SUCCESS) {
         return false;
     }
 
     uint64_t results[4] = {};
     size_t dataSize = sizeof(results);
-    VkDeviceSize stride = sizeof(uint64_t);
+    VkDeviceSize stride = sizeof(uint64_t) * 2;
 
     VkResult result = vkGetQueryPoolResults(mContext.device, mContext.timestamps.pool,
             vtq->startingQueryIndex, 2, dataSize, (void*) results, stride,
@@ -786,6 +894,9 @@ SyncStatus VulkanDriver::getSyncStatus(Handle<HwSync> sh) {
     VulkanSync* sync = handle_cast<VulkanSync>(mHandleMap, sh);
     if (sync->fence == nullptr) {
         return SyncStatus::NOT_SIGNALED;
+    }
+    if (sync->fence->swapChainDestroyed) {
+        return SyncStatus::ERROR;
     }
     VkResult status = sync->fence->status.load(std::memory_order_relaxed);
     switch (status) {
@@ -834,69 +945,111 @@ void VulkanDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassP
     const VkExtent2D extent = rt->getExtent();
     assert(extent.width > 0 && extent.height > 0);
 
-    const VulkanAttachment color = rt->getColor();
     const VulkanAttachment depth = rt->getDepth();
-    const bool hasColor = color.format != VK_FORMAT_UNDEFINED;
-    const bool hasDepth = depth.format != VK_FORMAT_UNDEFINED;
 
-    mDisposer.acquire(rt, mContext.currentCommands->resources);
-    mDisposer.acquire(color.offscreen, mContext.currentCommands->resources);
-    mDisposer.acquire(depth.offscreen, mContext.currentCommands->resources);
-
-    VkImageLayout finalColorLayout;
-    VkImageLayout finalDepthLayout;
-
-    if (rt->isOffscreen()) {
-        finalColorLayout = VK_IMAGE_LAYOUT_GENERAL;
-        finalDepthLayout = VK_IMAGE_LAYOUT_GENERAL;
-    } else {
-        finalColorLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-        finalDepthLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    // Filament has the expectation that the contents of the swap chain are not preserved on the
+    // first render pass. Note however that its contents are often preserved on subsequent render
+    // passes, due to multiple views.
+    TargetBufferFlags discardStart = params.flags.discardStart;
+    if (rt->invalidate()) {
+        discardStart |= TargetBufferFlags::COLOR;
     }
 
-    VkRenderPass renderPass = mFramebufferCache.getRenderPass({
-        .finalColorLayout = finalColorLayout,
-        .finalDepthLayout = finalDepthLayout,
-        .colorFormat = color.format,
+    // Create the VkRenderPass or fetch it from cache.
+    VulkanFboCache::RenderPassKey rpkey = {
+        .depthLayout = depth.layout,
         .depthFormat = depth.format,
-        .flags = {
-            .clear = params.flags.clear,
-            .discardStart = params.flags.discardStart,
-            .discardEnd = params.flags.discardEnd
+        .clear = params.flags.clear,
+        .discardStart = discardStart,
+        .discardEnd = params.flags.discardEnd,
+        .samples = rt->getSamples(),
+        .subpassMask = uint8_t(params.subpassMask)
+    };
+    for (int i = 0; i < MRT::TARGET_COUNT; i++) {
+        rpkey.colorLayout[i] = rt->getColor(i).layout;
+        rpkey.colorFormat[i] = rt->getColor(i).format;
+        VulkanTexture* texture = rt->getColor(i).texture;
+        if (rpkey.samples > 1 && texture && texture->samples == 1) {
+            rpkey.needsResolveMask |= (1 << i);
         }
-    });
-    mBinder.bindRenderPass(renderPass);
-
-    VulkanFboCache::FboKey fbo { .renderPass = renderPass };
-    int numAttachments = 0;
-    if (hasColor) {
-        fbo.attachments[numAttachments++] = color.view;
-    }
-    if (hasDepth) {
-        fbo.attachments[numAttachments++] = depth.view;
     }
 
+    VkRenderPass renderPass = mFramebufferCache.getRenderPass(rpkey);
+    mBinder.bindRenderPass(renderPass, 0);
+
+    // Create the VkFramebuffer or fetch it from cache.
+    VulkanFboCache::FboKey fbkey {
+        .renderPass = renderPass,
+        .width = (uint16_t) extent.width,
+        .height = (uint16_t) extent.height,
+        .layers = 1,
+        .samples = rpkey.samples
+    };
+    for (int i = 0; i < MRT::TARGET_COUNT; i++) {
+        if (rt->getColor(i).format == VK_FORMAT_UNDEFINED) {
+            fbkey.color[i] = VK_NULL_HANDLE;
+            fbkey.resolve[i] = VK_NULL_HANDLE;
+        } else if (fbkey.samples == 1) {
+            fbkey.color[i] = rt->getColor(i).view;
+            fbkey.resolve[i] = VK_NULL_HANDLE;
+            assert(fbkey.color[i]);
+        } else {
+            fbkey.color[i] = rt->getMsaaColor(i).view;
+            VulkanTexture* texture = rt->getColor(i).texture;
+            if (texture && texture->samples == 1) {
+                fbkey.resolve[i] = rt->getColor(i).view;
+                assert(fbkey.resolve[i]);
+            }
+            assert(fbkey.color[i]);
+        }
+    }
+    if (depth.format != VK_FORMAT_UNDEFINED) {
+        fbkey.depth = rpkey.samples == 1 ? depth.view : rt->getMsaaDepth().view;
+        assert(fbkey.depth);
+    }
+    VkFramebuffer vkfb = mFramebufferCache.getFramebuffer(fbkey);
+
+    // The current command buffer now owns a reference to the render target and its attachments.
+    mDisposer.acquire(rt, mContext.currentCommands->resources);
+    mDisposer.acquire(depth.texture, mContext.currentCommands->resources);
+    for (int i = 0; i < MRT::TARGET_COUNT; i++) {
+        mDisposer.acquire(rt->getColor(i).texture, mContext.currentCommands->resources);
+    }
+
+    // Populate the structures required for vkCmdBeginRenderPass.
     VkRenderPassBeginInfo renderPassInfo {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = renderPass,
-        .framebuffer = mFramebufferCache.getFramebuffer(fbo, extent.width, extent.height),
-        .renderArea = {
-            .offset = {params.viewport.left, params.viewport.bottom},
-            .extent = {params.viewport.width, params.viewport.height}
-        }
+        .framebuffer = vkfb,
+
+        // The renderArea field constrains the LoadOp, but scissoring does not.
+        // Therefore we do not set the scissor rect here, we only need it in draw().
+        .renderArea = { .offset = {}, .extent = extent }
     };
 
     rt->transformClientRectToPlatform(&renderPassInfo.renderArea);
 
-    VkClearValue clearValues[2] = {};
-    if (hasColor) {
-        VkClearValue& clearValue = clearValues[renderPassInfo.clearValueCount++];
-        clearValue.color.float32[0] = params.clearColor.r;
-        clearValue.color.float32[1] = params.clearColor.g;
-        clearValue.color.float32[2] = params.clearColor.b;
-        clearValue.color.float32[3] = params.clearColor.a;
+    VkClearValue clearValues[MRT::TARGET_COUNT + MRT::TARGET_COUNT + 1] = {};
+
+    // NOTE: clearValues must be populated in the same order as the attachments array in
+    // VulkanFboCache::getFramebuffer. Values must be provided regardless of whether Vulkan is
+    // actually clearing that particular target.
+    for (int i = 0; i < MRT::TARGET_COUNT; i++) {
+        if (fbkey.color[i]) {
+            VkClearValue& clearValue = clearValues[renderPassInfo.clearValueCount++];
+            clearValue.color.float32[0] = params.clearColor.r;
+            clearValue.color.float32[1] = params.clearColor.g;
+            clearValue.color.float32[2] = params.clearColor.b;
+            clearValue.color.float32[3] = params.clearColor.a;
+        }
     }
-    if (hasDepth) {
+    // Resolve attachments are not cleared but still have entries in the list, so skip over them.
+    for (int i = 0; i < MRT::TARGET_COUNT; i++) {
+        if (rpkey.needsResolveMask & (1u << i)) {
+            renderPassInfo.clearValueCount++;
+        }
+    }
+    if (fbkey.depth) {
         VkClearValue& clearValue = clearValues[renderPassInfo.clearValueCount++];
         clearValue.depthStencil = {(float) params.clearDepth, 0};
     }
@@ -908,25 +1061,22 @@ void VulkanDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassP
             VK_SUBPASS_CONTENTS_INLINE);
 
     VkViewport viewport = mContext.viewport = {
-            .x = (float) params.viewport.left,
-            .y = (float) params.viewport.bottom,
-            .width = (float) params.viewport.width,
-            .height = (float) params.viewport.height,
-            .minDepth = 0.0f,
-            .maxDepth = 1.0f
+        .x = (float) params.viewport.left,
+        .y = (float) params.viewport.bottom,
+        .width = (float) params.viewport.width,
+        .height = (float) params.viewport.height,
+        .minDepth = params.depthRange.near,
+        .maxDepth = params.depthRange.far
     };
-    VkRect2D scissor {
-            .offset = { std::max(0, (int32_t) viewport.x), std::max(0, (int32_t) viewport.y) },
-            .extent = { (uint32_t) viewport.width, (uint32_t) viewport.height }
-    };
-
-    mCurrentRenderTarget->transformClientRectToPlatform(&scissor);
-    vkCmdSetScissor(swapContext.commands.cmdbuffer, 0, 1, &scissor);
 
     mCurrentRenderTarget->transformClientRectToPlatform(&viewport);
     vkCmdSetViewport(swapContext.commands.cmdbuffer, 0, 1, &viewport);
 
-    mContext.currentRenderPass = renderPassInfo;
+    mContext.currentRenderPass = {
+        .renderPass = renderPassInfo.renderPass,
+        .subpassMask = params.subpassMask,
+        .currentSubpass = 0
+    };
 }
 
 void VulkanDriver::endRenderPass(int) {
@@ -935,7 +1085,39 @@ void VulkanDriver::endRenderPass(int) {
     assert(mCurrentRenderTarget);
     vkCmdEndRenderPass(mContext.currentCommands->cmdbuffer);
     mCurrentRenderTarget = VK_NULL_HANDLE;
+    if (mContext.currentRenderPass.currentSubpass > 0) {
+        for (uint32_t i = 0; i < VulkanBinder::TARGET_BINDING_COUNT; i++) {
+            mBinder.bindInputAttachment(i, {});
+        }
+        mContext.currentRenderPass.currentSubpass = 0;
+    }
     mContext.currentRenderPass.renderPass = VK_NULL_HANDLE;
+}
+
+void VulkanDriver::nextSubpass(int) {
+    ASSERT_PRECONDITION(mContext.currentRenderPass.currentSubpass == 0,
+            "Only two subpasses are currently supported.");
+
+    assert(mContext.currentCommands);
+    assert(mContext.currentSurface);
+    assert(mCurrentRenderTarget);
+    assert(mContext.currentRenderPass.subpassMask);
+
+    vkCmdNextSubpass(mContext.currentCommands->cmdbuffer, VK_SUBPASS_CONTENTS_INLINE);
+
+    mBinder.bindRenderPass(mContext.currentRenderPass.renderPass,
+            ++mContext.currentRenderPass.currentSubpass);
+
+    for (uint32_t i = 0; i < VulkanBinder::TARGET_BINDING_COUNT; i++) {
+        if ((1 << i) & mContext.currentRenderPass.subpassMask) {
+            VulkanAttachment subpassInput = mCurrentRenderTarget->getColor(i);
+            VkDescriptorImageInfo info = {
+                .imageView = subpassInput.view,
+                .imageLayout = subpassInput.layout,
+            };
+            mBinder.bindInputAttachment(i, info);
+        }
+    }
 }
 
 void VulkanDriver::setRenderPrimitiveBuffer(Handle<HwRenderPrimitive> rph,
@@ -969,6 +1151,10 @@ void VulkanDriver::commit(Handle<HwSwapChain> sch) {
     ASSERT_POSTCONDITION(mContext.currentCommands,
             "Vulkan driver requires at least one frame before a commit.");
 
+    // Before swapping, transition the current swap chain image to the PRESENT layout. This cannot
+    // be done as part of the render pass because it does not know if it is last pass in the frame.
+    transitionSwapChain(mContext);
+
     // Finalize the command buffer and set the cmdbuffer pointer to null.
     VkResult result = vkEndCommandBuffer(mContext.currentCommands->cmdbuffer);
     ASSERT_POSTCONDITION(result == VK_SUCCESS, "vkEndCommandBuffer error.");
@@ -995,6 +1181,7 @@ void VulkanDriver::commit(Handle<HwSwapChain> sch) {
     cmdfence->submitted = true;
     lock.unlock();
     ASSERT_POSTCONDITION(result == VK_SUCCESS, "vkQueueSubmit error.");
+    swapContext.invalid = true;
     cmdfence->condition.notify_all();
 
     // Present the backbuffer.
@@ -1009,20 +1196,16 @@ void VulkanDriver::commit(Handle<HwSwapChain> sch) {
     };
     result = vkQueuePresentKHR(surface.presentQueue, &presentInfo);
 
-    // We should be notified of a suboptimal surface, but it should not cause a cascade of
-    // log messages, or a loop of re-creations.
+    // On Android Q and above, a suboptimal surface is always reported after screen rotation:
+    // https://android-developers.googleblog.com/2020/02/handling-device-orientation-efficiently.html
     if (result == VK_SUBOPTIMAL_KHR && !surface.suboptimal) {
         utils::slog.w << "Vulkan Driver: Suboptimal swap chain." << utils::io::endl;
         surface.suboptimal = true;
     }
 
     // The surface can be "out of date" when it has been resized, which is not an error.
-    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-        refreshSwapChain();
-        return;
-    }
-
-    assert(result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR);
+    assert(result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR ||
+            result == VK_ERROR_OUT_OF_DATE_KHR);
 }
 
 void VulkanDriver::bindUniformBuffer(size_t index, Handle<HwUniformBuffer> ubh) {
@@ -1048,7 +1231,14 @@ void VulkanDriver::insertEventMarker(char const* string, size_t len) {
     constexpr float MARKER_COLOR[] = { 0.0f, 1.0f, 0.0f, 1.0f };
     ASSERT_POSTCONDITION(mContext.currentCommands,
             "Markers can only be inserted within a beginFrame / endFrame.");
-    if (mContext.debugMarkersSupported) {
+    if (mContext.debugUtilsSupported) {
+        VkDebugUtilsLabelEXT labelInfo = {
+            .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
+            .pLabelName = string,
+            .color = {1, 1, 0, 1},
+        };
+        vkCmdInsertDebugUtilsLabelEXT(mContext.currentCommands->cmdbuffer, &labelInfo);
+    } else if (mContext.debugMarkersSupported) {
         VkDebugMarkerMarkerInfoEXT markerInfo = {};
         markerInfo.sType = VK_STRUCTURE_TYPE_DEBUG_MARKER_MARKER_INFO_EXT;
         memcpy(markerInfo.color, &MARKER_COLOR[0], sizeof(MARKER_COLOR));
@@ -1062,7 +1252,14 @@ void VulkanDriver::pushGroupMarker(char const* string, size_t len) {
     constexpr float MARKER_COLOR[] = { 0.0f, 1.0f, 0.0f, 1.0f };
     ASSERT_POSTCONDITION(mContext.currentCommands,
             "Markers can only be inserted within a beginFrame / endFrame.");
-    if (mContext.debugMarkersSupported) {
+    if (mContext.debugUtilsSupported) {
+        VkDebugUtilsLabelEXT labelInfo = {
+            .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
+            .pLabelName = string,
+            .color = {0, 1, 0, 1},
+        };
+        vkCmdBeginDebugUtilsLabelEXT(mContext.currentCommands->cmdbuffer, &labelInfo);
+    } else if (mContext.debugMarkersSupported) {
         VkDebugMarkerMarkerInfoEXT markerInfo = {};
         markerInfo.sType = VK_STRUCTURE_TYPE_DEBUG_MARKER_MARKER_INFO_EXT;
         memcpy(markerInfo.color, &MARKER_COLOR[0], sizeof(MARKER_COLOR));
@@ -1074,7 +1271,9 @@ void VulkanDriver::pushGroupMarker(char const* string, size_t len) {
 void VulkanDriver::popGroupMarker(int) {
     ASSERT_POSTCONDITION(mContext.currentCommands,
             "Markers can only be inserted within a beginFrame / endFrame.");
-    if (mContext.debugMarkersSupported) {
+    if (mContext.debugUtilsSupported) {
+        vkCmdEndDebugUtilsLabelEXT(mContext.currentCommands->cmdbuffer);
+    } else if (mContext.debugMarkersSupported) {
         vkCmdDebugMarkerEndEXT(mContext.currentCommands->cmdbuffer);
     }
 }
@@ -1105,16 +1304,18 @@ void VulkanDriver::blit(TargetBufferFlags buffers,
     auto dstTarget = handle_cast<VulkanRenderTarget>(mHandleMap, dst);
     auto srcTarget = handle_cast<VulkanRenderTarget>(mHandleMap, src);
 
+    const int targetIndex = 0; // TODO: support MRT in blit
+
     // In debug builds, verify that the two render targets have blittable formats.
 #ifndef NDEBUG
     const VkPhysicalDevice gpu = mContext.physicalDevice;
     VkFormatProperties info;
-    vkGetPhysicalDeviceFormatProperties(gpu, srcTarget->getColor().format, &info);
+    vkGetPhysicalDeviceFormatProperties(gpu, srcTarget->getColor(targetIndex).format, &info);
     if (!ASSERT_POSTCONDITION_NON_FATAL(info.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT,
             "Source format is not blittable")) {
         return;
     }
-    vkGetPhysicalDeviceFormatProperties(gpu, dstTarget->getColor().format, &info);
+    vkGetPhysicalDeviceFormatProperties(gpu, dstTarget->getColor(targetIndex).format, &info);
     if (!ASSERT_POSTCONDITION_NON_FATAL(info.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT,
             "Destination format is not blittable")) {
         return;
@@ -1124,41 +1325,73 @@ void VulkanDriver::blit(TargetBufferFlags buffers,
     }
 #endif
 
-    const int32_t srcRight = srcRect.left + srcRect.width;
-    const int32_t srcTop = srcRect.bottom + srcRect.height;
-    const uint32_t srcLevel = srcTarget->getColorLevel();
+    const VkExtent2D srcExtent = srcTarget->getExtent();
+    const VkExtent2D dstExtent = dstTarget->getExtent();
 
-    const int32_t dstRight = dstRect.left + dstRect.width;
-    const int32_t dstTop = dstRect.bottom + dstRect.height;
-    const uint32_t dstLevel = dstTarget->getColorLevel();
+    const int32_t srcLeft = std::min(srcRect.left, (int32_t) srcExtent.width);
+    const int32_t srcBottom = std::min(srcRect.bottom, (int32_t) srcExtent.height);
+    const int32_t srcRight = std::min(srcRect.left + srcRect.width, srcExtent.width);
+    const int32_t srcTop = std::min(srcRect.bottom + srcRect.height, srcExtent.height);
+    const uint32_t srcLevel = srcTarget->getColor(targetIndex).level;
+    const uint32_t srcLayer = srcTarget->getColor(targetIndex).layer;
+
+    const int32_t dstLeft = std::min(dstRect.left, (int32_t) dstExtent.width);
+    const int32_t dstBottom = std::min(dstRect.bottom, (int32_t) dstExtent.height);
+    const int32_t dstRight = std::min(dstRect.left + dstRect.width, dstExtent.width);
+    const int32_t dstTop = std::min(dstRect.bottom + dstRect.height, dstExtent.height);
+    const uint32_t dstLevel = dstTarget->getColor(targetIndex).level;
+    const uint32_t dstLayer = dstTarget->getColor(targetIndex).layer;
+
+    const VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
 
     const VkImageBlit blitRegions[1] = {{
-        .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, srcLevel, 0, 1 },
-        .srcOffsets = { { srcRect.left, srcRect.bottom, 0 }, { srcRight, srcTop, 1 }},
-        .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, dstLevel, 0, 1 },
-        .dstOffsets = { { dstRect.left, dstRect.bottom, 0 }, { dstRight, dstTop, 1 }}
+        .srcSubresource = { aspect, srcLevel, srcLayer, 1 },
+        .srcOffsets = { { srcLeft, srcBottom, 0 }, { srcRight, srcTop, 1 }},
+        .dstSubresource = { aspect, dstLevel, dstLayer, 1 },
+        .dstOffsets = { { dstLeft, dstBottom, 0 }, { dstRight, dstTop, 1 }}
     }};
 
+    const VkImageResolve resolveRegions[1] = {{
+        .srcSubresource = { aspect, srcLevel, srcLayer, 1 },
+        .srcOffset = { srcLeft, srcBottom, 0 },
+        .dstSubresource = { aspect, dstLevel, dstLayer, 1 },
+        .dstOffset = { dstLeft, dstBottom, 0 },
+        .extent = { srcExtent.width, srcExtent.height, 1 }
+    }};
+
+    const VulkanTexture* srcTexture = srcTarget->getColor(targetIndex).texture;
+    const VulkanTexture* dstTexture = dstTarget->getColor(targetIndex).texture;
+
     auto vkblit = [=](VkCommandBuffer cmdbuffer) {
-        VkImage srcImage = srcTarget->getColor().image;
+        VkImage srcImage = srcTarget->getColor(targetIndex).image;
         VulkanTexture::transitionImageLayout(cmdbuffer, srcImage, VK_IMAGE_LAYOUT_UNDEFINED,
-                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, srcLevel, 1);
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, srcLevel, 1, 1, aspect);
 
-        VkImage dstImage = dstTarget->getColor().image;
+        VkImage dstImage = dstTarget->getColor(targetIndex).image;
         VulkanTexture::transitionImageLayout(cmdbuffer, dstImage, VK_IMAGE_LAYOUT_UNDEFINED,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, dstLevel, 1);
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, dstLevel, 1, 1, aspect);
 
-        // TODO: Issue vkCmdResolveImage for MSAA targets.
+        assert(srcTexture && "Blit source does not have an attached color texture.");
 
-        vkCmdBlitImage(cmdbuffer, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, blitRegions,
-                filter == SamplerMagFilter::NEAREST ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+        if (srcTexture->samples > 1 && dstTexture && dstTexture->samples == 1) {
+            vkCmdResolveImage(cmdbuffer, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, resolveRegions);
+        } else {
+            vkCmdBlitImage(cmdbuffer, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, blitRegions,
+                    filter == SamplerMagFilter::NEAREST ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+        }
 
         VulkanTexture::transitionImageLayout(cmdbuffer, srcImage, VK_IMAGE_LAYOUT_UNDEFINED,
-                getTextureLayout(srcTarget->getColor().offscreen->usage), srcLevel, 1);
+                getTextureLayout(srcTexture->usage), srcLevel, 1, 1, aspect);
+
+        // Determine the desired texture layout for the destination while ensuring that the default
+        // render target is supported, which has no associated texture.
+        const VkImageLayout desiredLayout = dstTexture ? getTextureLayout(dstTexture->usage) :
+                getSwapContext(mContext).attachment.layout;
 
         VulkanTexture::transitionImageLayout(cmdbuffer, dstImage, VK_IMAGE_LAYOUT_UNDEFINED,
-                getTextureLayout(dstTarget->getColor().offscreen->usage), dstLevel, 1);
+                desiredLayout, dstLevel, 1, 1, aspect);
     };
 
     if (!mContext.currentCommands) {
@@ -1191,6 +1424,9 @@ void VulkanDriver::draw(PipelineState pipelineState, Handle<HwRenderPrimitive> r
 #endif
 
     // Update the VK raster state.
+
+    const VulkanRenderTarget* rt = mCurrentRenderTarget;
+
     mContext.rasterState.depthStencil = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
         .depthTestEnable = VK_TRUE,
@@ -1198,6 +1434,12 @@ void VulkanDriver::draw(PipelineState pipelineState, Handle<HwRenderPrimitive> r
         .depthCompareOp = getCompareOp(rasterState.depthFunc),
         .depthBoundsTestEnable = VK_FALSE,
         .stencilTestEnable = VK_FALSE,
+    };
+
+    mContext.rasterState.multisampling = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = (VkSampleCountFlagBits) rt->getSamples(),
+        .alphaToCoverageEnable = rasterState.alphaToCoverage,
     };
 
     mContext.rasterState.blending = {
@@ -1211,24 +1453,16 @@ void VulkanDriver::draw(PipelineState pipelineState, Handle<HwRenderPrimitive> r
         .colorWriteMask = (VkColorComponentFlags) (rasterState.colorWrite ? 0xf : 0x0),
     };
 
-    auto& vkraster = mContext.rasterState.rasterization;
+    VkPipelineRasterizationStateCreateInfo& vkraster = mContext.rasterState.rasterization;
     vkraster.cullMode = getCullMode(rasterState.culling);
     vkraster.frontFace = getFrontFace(rasterState.inverseFrontFaces);
     vkraster.depthBiasEnable = (depthOffset.constant || depthOffset.slope) ? VK_TRUE : VK_FALSE;
     vkraster.depthBiasConstantFactor = depthOffset.constant;
     vkraster.depthBiasSlopeFactor = depthOffset.slope;
 
-    // Remove the fragment shader from depth-only passes to avoid a validation warning.
+    mContext.rasterState.getColorTargetCount = rt->getColorTargetCount();
+
     VulkanBinder::ProgramBundle shaderHandles = program->bundle;
-    VulkanRenderTarget* rt = mCurrentRenderTarget;
-    const auto color = rt->getColor();
-    const auto depth = rt->getDepth();
-    const bool hasColor = color.format != VK_FORMAT_UNDEFINED;
-    const bool hasDepth = depth.format != VK_FORMAT_UNDEFINED;
-    const bool depthOnly = hasDepth && !hasColor;
-    if (depthOnly) {
-        shaderHandles.fragment = VK_NULL_HANDLE;
-    }
 
     // Push state changes to the VulkanBinder instance. This is fast and does not make VK calls.
     mBinder.bindProgramBundle(shaderHandles);
@@ -1290,10 +1524,10 @@ void VulkanDriver::draw(PipelineState pipelineState, Handle<HwRenderPrimitive> r
     vkCmdSetScissor(cmdbuffer, 0, 1, &scissor);
 
     // Bind new descriptor sets if they need to change.
-    VkDescriptorSet descriptors[2];
+    VkDescriptorSet descriptors[3];
     VkPipelineLayout pipelineLayout;
     if (mBinder.getOrCreateDescriptors(descriptors, &pipelineLayout)) {
-        vkCmdBindDescriptorSets(cmdbuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 2,
+        vkCmdBindDescriptorSets(cmdbuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 3,
                 descriptors, 0, nullptr);
     }
 
@@ -1331,7 +1565,7 @@ void VulkanDriver::beginTimerQuery(Handle<HwTimerQuery> tqh) {
 
     vkCmdResetQueryPool(commands->cmdbuffer, mContext.timestamps.pool, index, 2);
     vkCmdWriteTimestamp(commands->cmdbuffer, stage, mContext.timestamps.pool, index);
-    vtq->ready.store(true);
+    vtq->cmdbuffer.store(commands);
 }
 
 void VulkanDriver::endTimerQuery(Handle<HwTimerQuery> tqh) {
@@ -1346,15 +1580,9 @@ void VulkanDriver::endTimerQuery(Handle<HwTimerQuery> tqh) {
 
 void VulkanDriver::refreshSwapChain() {
     VulkanSurfaceContext& surface = *mContext.currentSurface;
-    getSurfaceCaps(mContext, surface);
 
     backend::destroySwapChain(mContext, surface, mDisposer);
     createSwapChain(mContext, surface);
-
-    void* nativeWindow = surface.nativeWindow;
-    VkExtent2D size;
-    mContextManager.getClientExtent(nativeWindow, &size.width, &size.height);
-    surface.clientSize = size;
 
     mFramebufferCache.reset();
 }

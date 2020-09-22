@@ -28,9 +28,9 @@ endif()
 # ==================================================================================================
 set(TARGET gltfio-jni)
 
-set(CXX_STANDARD "-std=c++14")
+set(CXX_STANDARD "-std=c++17")
 if (WIN32)
-    set(CXX_STANDARD "/std:c++14")
+    set(CXX_STANDARD "/std:c++17")
 endif()
 
 set(ANDROID_DIR ../../android)
@@ -52,8 +52,6 @@ set(JNI_SOURCE_FILES
 
 add_library(${TARGET} SHARED ${JNI_SOURCE_FILES})
 target_link_libraries(${TARGET} gltfio_core gltfio_resources)
-
-target_compile_options(${TARGET} PRIVATE $<$<PLATFORM_ID:Linux>:-fPIC>)
 
 set(INSTALL_TYPE LIBRARY)
 if (WIN32 OR CYGWIN)
@@ -94,7 +92,7 @@ add_jar(${TARGET}
         SOURCES ${JAVA_SOURCE_FILES}
         INCLUDE_JARS
             ../lib/annotation-1.0.0.jar
-            ${CMAKE_CURRENT_BINARY_DIR}/../filament/filament-java.jar
+            filament-java
 )
 
 install_jar(${TARGET} lib)

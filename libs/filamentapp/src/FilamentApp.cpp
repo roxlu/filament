@@ -29,6 +29,7 @@
 
 #include <imgui.h>
 
+#include <utils/EntityManager.h>
 #include <utils/Panic.h>
 #include <utils/Path.h>
 
@@ -123,9 +124,9 @@ void FilamentApp::run(const Config& config, SetupCallback setupCallback,
         window->mOrthoView->getView()->setVisibleLayers(0x6, 0x6);
 
         // only preserve the color buffer for additional views; depth and stencil can be discarded.
-        window->mDepthView->getView()->setShadowsEnabled(false);
-        window->mGodView->getView()->setShadowsEnabled(false);
-        window->mOrthoView->getView()->setShadowsEnabled(false);
+        window->mDepthView->getView()->setShadowingEnabled(false);
+        window->mGodView->getView()->setShadowingEnabled(false);
+        window->mOrthoView->getView()->setShadowingEnabled(false);
     }
 
     loadDirt(config);
@@ -548,10 +549,12 @@ FilamentApp::Window::Window(FilamentApp* filamentApp,
     mRenderer = mFilamentApp->mEngine->createRenderer();
 
     // create cameras
-    mCameras[0] = mMainCamera = mFilamentApp->mEngine->createCamera();
-    mCameras[1] = mDebugCamera = mFilamentApp->mEngine->createCamera();
-    mCameras[2] = mOrthoCamera = mFilamentApp->mEngine->createCamera();
-    mCameras[3] = mUiCamera = mFilamentApp->mEngine->createCamera();
+    utils::EntityManager& em = utils::EntityManager::get();
+    em.create(4, mCameraEntities);
+    mCameras[0] = mMainCamera = mFilamentApp->mEngine->createCamera(mCameraEntities[0]);
+    mCameras[1] = mDebugCamera = mFilamentApp->mEngine->createCamera(mCameraEntities[1]);
+    mCameras[2] = mOrthoCamera = mFilamentApp->mEngine->createCamera(mCameraEntities[2]);
+    mCameras[3] = mUiCamera = mFilamentApp->mEngine->createCamera(mCameraEntities[3]);
 
     // set exposure
     for (auto camera : mCameras) {
@@ -602,8 +605,10 @@ FilamentApp::Window::Window(FilamentApp* filamentApp,
 
 FilamentApp::Window::~Window() {
     mViews.clear();
-    for (auto& camera : mCameras) {
-        mFilamentApp->mEngine->destroy(camera);
+    utils::EntityManager& em = utils::EntityManager::get();
+    for (auto e : mCameraEntities) {
+        mFilamentApp->mEngine->destroyCameraComponent(e);
+        em.destroy(e);
     }
     mFilamentApp->mEngine->destroy(mRenderer);
     mFilamentApp->mEngine->destroy(mSwapChain);

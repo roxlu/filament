@@ -21,7 +21,6 @@
 
 #include <private/filament/UibGenerator.h>
 
-#include "details/Culler.h"
 #include "details/Engine.h"
 #include "details/IndirectLight.h"
 #include "details/Skybox.h"
@@ -203,7 +202,7 @@ void FScene::updateUBOs(utils::Range<uint32_t> visibleRenderables, backend::Hand
         UniformBuffer::setUniform(buffer,
                 offset + offsetof(PerRenderableUib, worldFromModelNormalMatrix), m);
 
-        // Note that we cast bools to uint32. Booleans are byte-sized in C++, but we need to
+        // Note that we cast bool to uint32_t. Booleans are byte-sized in C++, but we need to
         // initialize all 32 bits in the UBO field.
 
         FRenderableManager::Visibility visibility = sceneData.elementAt<VISIBILITY_STATE>(i);
@@ -364,6 +363,12 @@ void FScene::remove(Entity entity) {
     mEntities.erase(entity);
 }
 
+void FScene::removeEntities(const Entity* entities, size_t count) {
+    for (size_t i = 0; i < count; ++i, ++entities) {
+        remove(*entities);
+    }
+}
+
 size_t FScene::getRenderableCount() const noexcept {
     FEngine& engine = mEngine;
     EntityManager& em = engine.getEntityManager();
@@ -407,8 +412,8 @@ bool FScene::hasContactShadows() const noexcept {
     // TODO: cache the the result of this Loop in the LightManager
     bool hasContactShadows = false;
     auto& lcm = mEngine.getLightManager();
-    auto pFirst = mLightData.begin<LIGHT_INSTANCE>();
-    auto pLast = mLightData.end<LIGHT_INSTANCE>();
+    const auto *pFirst = mLightData.begin<LIGHT_INSTANCE>();
+    const auto *pLast = mLightData.end<LIGHT_INSTANCE>();
     while (pFirst != pLast && !hasContactShadows) {
         if (pFirst->isValid()) {
             auto const& shadowOptions = lcm.getShadowOptions(*pFirst);
@@ -444,6 +449,10 @@ void Scene::addEntities(const Entity* entities, size_t count) {
 
 void Scene::remove(Entity entity) {
     upcast(this)->remove(entity);
+}
+
+void Scene::removeEntities(const Entity* entities, size_t count) {
+    upcast(this)->removeEntities(entities, count);
 }
 
 size_t Scene::getRenderableCount() const noexcept {

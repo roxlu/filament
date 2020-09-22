@@ -84,7 +84,9 @@ bool MaterialCompiler::processVertexShader(const MaterialLexeme& lexeme,
     MaterialLexeme trimmedLexeme = lexeme.trimBlockMarkers();
     std::string shaderStr = trimmedLexeme.getStringValue();
 
-    builder.materialVertex(shaderStr.c_str(), trimmedLexeme.getLine() + 1);
+    // getLine() returns a line number, with 1 being the first line, but .material wants a 0-based
+    // line number offset, where 0 is the first line.
+    builder.materialVertex(shaderStr.c_str(), trimmedLexeme.getLine() - 1);
     return true;
 }
 
@@ -94,7 +96,9 @@ bool MaterialCompiler::processFragmentShader(const MaterialLexeme& lexeme,
     MaterialLexeme trimmedLexeme = lexeme.trimBlockMarkers();
     std::string shaderStr = trimmedLexeme.getStringValue();
 
-    builder.material(shaderStr.c_str(), trimmedLexeme.getLine() + 1);
+    // getLine() returns a line number, with 1 being the first line, but .material wants a 0-based
+    // line number offset, where 0 is the first line.
+    builder.material(shaderStr.c_str(), trimmedLexeme.getLine() - 1);
     return true;
 }
 
@@ -276,12 +280,17 @@ bool MaterialCompiler::run(const Config& config) {
 
     builder
         .includeCallback(includer)
+        .fileName(materialFilePath.getName().c_str())
         .platform(config.getPlatform())
         .targetApi(config.getTargetApi())
         .optimization(config.getOptimizationLevel())
         .printShaders(config.printShaders())
         .generateDebugInfo(config.isDebug())
         .variantFilter(config.getVariantFilter() | builder.getVariantFilter());
+
+    for (const auto& define : config.getDefines()) {
+        builder.shaderDefine(define.first.c_str(), define.second.c_str());
+    }
 
     // Write builder.build() to output.
     Package package = builder.build();

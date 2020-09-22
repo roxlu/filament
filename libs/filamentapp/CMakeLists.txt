@@ -51,6 +51,7 @@ set(LIBS
         filagui
         image
         camutils
+        geometry
 )
 
 set(MATERIAL_SRCS
@@ -151,8 +152,4 @@ if (_isMultiConfig)
     target_compile_definitions(${TARGET} PRIVATE RELATIVE_ASSET_PATH="..")
 else()
     target_compile_definitions(${TARGET} PRIVATE RELATIVE_ASSET_PATH=".")
-endif()
-
-if (LINUX)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
 endif()

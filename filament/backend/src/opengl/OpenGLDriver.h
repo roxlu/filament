@@ -32,6 +32,9 @@
 
 #include <assert.h>
 
+#ifndef FILAMENT_OPENGL_HANDLE_ARENA_SIZE_IN_MB
+#    define FILAMENT_OPENGL_HANDLE_ARENA_SIZE_IN_MB 2
+#endif
 
 namespace filament {
 
@@ -107,7 +110,6 @@ public:
         using HwTexture::HwTexture;
         struct {
             GLuint id = 0;          // texture or renderbuffer id
-            mutable GLuint rb = 0;  // multi-sample sidecar renderbuffer
             GLenum target = 0;
             GLenum internalFormat = 0;
             mutable GLsync fence = nullptr;
@@ -180,6 +182,7 @@ public:
         struct GL {
             struct RenderBuffer {
                 GLTexture* texture = nullptr;
+                mutable GLuint rb = 0;  // multi-sample sidecar renderbuffer
                 uint8_t level = 0; // level when attached to a texture
             };
             // field ordering to optimize size on 64-bits

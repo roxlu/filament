@@ -6,6 +6,13 @@ void addEmissive(const MaterialInputs material, inout vec4 color) {
 #endif
 }
 
+#if defined(BLEND_MODE_MASKED)
+float computeMaskedAlpha(float a) {
+    // Use derivatives to smooth alpha tested edges
+    return (a - getMaskThreshold()) / max(fwidth(a), 1e-3) + 0.5;
+}
+#endif
+
 /**
  * Evaluates unlit materials. In this lighting model, only the base color and
  * emissive properties are taken into account:
@@ -24,7 +31,8 @@ vec4 evaluateMaterial(const MaterialInputs material) {
     vec4 color = material.baseColor;
 
 #if defined(BLEND_MODE_MASKED)
-    if (color.a < getMaskThreshold()) {
+    color.a = computeMaskedAlpha(color.a);
+    if (color.a <= 0.0) {
         discard;
     }
 #endif
@@ -37,7 +45,11 @@ vec4 evaluateMaterial(const MaterialInputs material) {
     if ((frameUniforms.directionalShadows & 1u) != 0u) {
         uint cascade = getShadowCascade();
         uint layer = cascade;
+#if defined(HAS_VSM)
+        // TODO: VSM shadow multiplier
+#else
         visibility = shadow(light_shadowMap, layer, getCascadeLightSpacePosition(cascade));
+#endif
     }
     if ((frameUniforms.directionalShadows & 0x2u) != 0u && visibility > 0.0) {
         if (objectUniforms.screenSpaceContactShadows != 0u) {

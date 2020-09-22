@@ -17,6 +17,7 @@
 #include "details/Engine.h"
 
 #include "MaterialParser.h"
+#include "ResourceAllocator.h"
 
 #include "details/DFG.h"
 #include "details/VertexBuffer.h"
@@ -33,9 +34,6 @@
 #include "details/SwapChain.h"
 #include "details/Texture.h"
 #include "details/View.h"
-
-#include "fg/ResourceAllocator.h"
-
 
 #include <private/filament/SibGenerator.h>
 
@@ -63,9 +61,6 @@ FEngine* FEngine::create(Backend backend, Platform* platform, void* sharedGLCont
     SYSTRACE_CALL();
 
     FEngine* instance = new FEngine(backend, platform, sharedGLContext);
-
-    slog.i << "FEngine (" << sizeof(void*) * 8 << " bits) created at " << instance << " "
-            << "(threading is " << (UTILS_HAS_THREADING ? "enabled)" : "disabled)") << io::endl;
 
     // initialize all fields that need an instance of FEngine
     // (this cannot be done safely in the ctor)
@@ -107,6 +102,51 @@ FEngine* FEngine::create(Backend backend, Platform* platform, void* sharedGLCont
     return instance;
 }
 
+#if UTILS_HAS_THREADING
+
+void FEngine::createAsync(CreateCallback callback, void* user,
+        Backend backend, Platform* platform, void* sharedGLContext) {
+    SYSTRACE_ENABLE();
+    SYSTRACE_CALL();
+    FEngine* instance = new FEngine(backend, platform, sharedGLContext);
+
+    // start the driver thread
+    instance->mDriverThread = std::thread(&FEngine::loop, instance);
+
+    // launch a thread to call the callback -- so it can't do any damage.
+    std::thread callbackThread = std::thread([instance, callback, user]() {
+        instance->mDriverBarrier.await();
+        callback(user, instance);
+    });
+
+    // let the callback thread die on its own
+    callbackThread.detach();
+}
+
+FEngine* FEngine::getEngine(void* token) {
+
+    FEngine* instance = static_cast<FEngine*>(token);
+
+    ASSERT_PRECONDITION(instance->mMainThreadId == std::this_thread::get_id(),
+            "Engine::createAsync() and Engine::getEngine() must be called on the same thread.");
+
+    // we use mResourceAllocator as a proxy for "am I already initialized"
+    if (!instance->mResourceAllocator) {
+        if (UTILS_UNLIKELY(!instance->mDriver)) {
+            // something went horribly wrong during driver initialization
+            instance->mDriverThread.join();
+            return nullptr;
+        }
+
+        // now we can initialize the largest part of the engine
+        instance->init();
+    }
+
+    return instance;
+}
+
+#endif
+
 // these must be static because only a pointer is copied to the render stream
 // Note that these coordinates are specified in OpenGL clip space. Other backends can transform
 // these in the vertex shader as needed.
@@ -132,11 +172,15 @@ FEngine::FEngine(Backend backend, Platform* platform, void* sharedGLContext) :
         mCommandBufferQueue(CONFIG_MIN_COMMAND_BUFFERS_SIZE, CONFIG_COMMAND_BUFFERS_SIZE),
         mPerRenderPassAllocator("per-renderpass allocator", CONFIG_PER_RENDER_PASS_ARENA_SIZE),
         mEngineEpoch(std::chrono::steady_clock::now()),
-        mDriverBarrier(1)
+        mDriverBarrier(1),
+        mMainThreadId(std::this_thread::get_id())
 {
     // we're assuming we're on the main thread here.
     // (it may not be the case)
     mJobSystem.adopt();
+
+    slog.i << "FEngine (" << sizeof(void*) * 8 << " bits) created at " << this << " "
+           << "(threading is " << (UTILS_HAS_THREADING ? "enabled)" : "disabled)") << io::endl;
 }
 
 /*
@@ -151,7 +195,7 @@ void FEngine::init() {
     mCommandStream = CommandStream(*mDriver, mCommandBufferQueue.getCircularBuffer());
     DriverApi& driverApi = getDriverApi();
 
-    mResourceAllocator = new fg::ResourceAllocator(driverApi);
+    mResourceAllocator = new ResourceAllocator(driverApi);
 
     mFullScreenTriangleVb = upcast(VertexBuffer::Builder()
             .vertexCount(3)
@@ -207,8 +251,6 @@ void FEngine::init() {
     mPostProcessManager.init();
     mLightManager.init(*this);
     mDFG = std::make_unique<DFG>(*this);
-
-    mMainThreadId = std::this_thread::get_id();
 }
 
 FEngine::~FEngine() noexcept {
@@ -230,7 +272,7 @@ void FEngine::shutdown() {
 
 #ifndef NDEBUG
     // print out some statistics about this run
-    size_t wm = mCommandBufferQueue.getHigWatermark();
+    size_t wm = mCommandBufferQueue.getHighWatermark();
     size_t wmpct = wm / (CONFIG_COMMAND_BUFFERS_SIZE / 100);
     slog.d << "CircularBuffer: High watermark "
            << wm / 1024 << " KiB (" << wmpct << "%)" << io::endl;
@@ -326,13 +368,13 @@ void FEngine::prepare() {
     // skipped is the UBO hasn't changed. Still we could have a lot of these.
     FEngine::DriverApi& driver = getDriverApi();
     for (auto& materialInstanceList : mMaterialInstances) {
-        for (auto& item : materialInstanceList.second) {
+        for (const auto& item : materialInstanceList.second) {
             item->commit(driver);
         }
     }
 
     // Commit default material instances.
-    for (auto& material : mMaterials) {
+    for (const auto& material : mMaterials) {
         material->getDefaultInstance()->commit(driver);
     }
 }
@@ -341,7 +383,7 @@ void FEngine::gc() {
     // Note: this runs in a Job
 
     JobSystem& js = mJobSystem;
-    auto parent = js.createJob();
+    auto *parent = js.createJob();
     auto em = std::ref(mEntityManager);
 
     js.run(jobs::createJob(js, parent, &FRenderableManager::gc, &mRenderableManager, em),
@@ -414,24 +456,7 @@ int FEngine::loop() {
     if (mPlatform == nullptr) {
         mPlatform = DefaultPlatform::create(&mBackend);
         mOwnPlatform = true;
-        const char* backend = nullptr;
-        switch (mBackend) {
-            case backend::Backend::NOOP:
-                backend = "Noop";
-                break;
-            case backend::Backend::OPENGL:
-                backend = "OpenGL";
-                break;
-            case backend::Backend::VULKAN:
-                backend = "Vulkan";
-                break;
-            case backend::Backend::METAL:
-                backend = "Metal";
-                break;
-            default:
-                backend = "Unknown";
-                break;
-        }
+        const char* const backend = backendToString(mBackend);
         slog.d << "FEngine resolved backend: " << backend << io::endl;
         if (mPlatform == nullptr) {
             slog.e << "Selected backend not supported in this build." << io::endl;
@@ -825,6 +850,17 @@ Engine* Engine::create(Backend backend, Platform* platform, void* sharedGLContex
 void Engine::destroy(Engine* engine) {
     FEngine::destroy(upcast(engine));
 }
+
+#if UTILS_HAS_THREADING
+void Engine::createAsync(Engine::CreateCallback callback, void* user, Backend backend,
+        Platform* platform, void* sharedGLContext) {
+    FEngine::createAsync(callback, user, backend, platform, sharedGLContext);
+}
+
+Engine* Engine::getEngine(void* token) {
+    return FEngine::getEngine(token);
+}
+#endif
 
 void Engine::destroy(Engine** pEngine) {
     if (pEngine) {

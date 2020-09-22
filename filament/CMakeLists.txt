@@ -4,12 +4,13 @@ project(filament C ASM)
 set(TARGET filament)
 set(PUBLIC_HDR_DIR include)
 set(GENERATION_ROOT ${CMAKE_CURRENT_BINARY_DIR})
-set(RESOURCE_DIR  "${GENERATION_ROOT}/generated/resources")
-set(MATERIAL_DIR  "${GENERATION_ROOT}/generated/material")
+set(RESOURCE_DIR "${GENERATION_ROOT}/generated/resources")
+set(MATERIAL_DIR "${GENERATION_ROOT}/generated/material")
 
 # ==================================================================================================
 # Sources and headers
 # ==================================================================================================
+
 set(PUBLIC_HDRS
         include/filament/Box.h
         include/filament/Camera.h
@@ -52,7 +53,6 @@ set(SRCS
         src/fg/fg/PassNode.cpp
         src/fg/fg/RenderTargetResourceEntry.cpp
         src/fg/fg/ResourceEntry.cpp
-        src/fg/ResourceAllocator.cpp
         src/Box.cpp
         src/Camera.cpp
         src/Color.cpp
@@ -79,6 +79,7 @@ set(SRCS
         src/RenderPass.cpp
         src/RenderPrimitive.cpp
         src/RenderTarget.cpp
+        src/ResourceAllocator.cpp
         src/Scene.cpp
         src/ShadowMap.cpp
         src/ShadowMapManager.cpp
@@ -105,7 +106,6 @@ set(PRIVATE_HDRS
         src/fg/fg/ResourceEntry.h
         src/fg/fg/RenderTargetResourceEntry.h
         src/fg/fg/ResourceNode.h
-        src/fg/ResourceAllocator.h
         src/fg/fg/VirtualResource.h
         src/details/Allocators.h
         src/details/Camera.h
@@ -136,32 +136,40 @@ set(PRIVATE_HDRS
         src/details/View.h
         src/FilamentAPI-impl.h
         src/FrameInfo.h
+        src/FrameHistory.h
         src/GPUBuffer.h
         src/Intersections.h
         src/MaterialParser.h
         src/PostProcessManager.h
         src/RenderPass.h
+        src/ResourceAllocator.h
         src/ToneMapping.h
         src/UniformBuffer.h
         src/upcast.h)
 
 set(MATERIAL_SRCS
-        src/materials/colorGrading.mat
-        src/materials/colorGradingAsSubpass.mat
+        src/materials/colorGrading/colorGrading.mat
+        src/materials/colorGrading/colorGradingAsSubpass.mat
         src/materials/defaultMaterial.mat
-        src/materials/dof.mat
-        src/materials/dofBlur.mat
+        src/materials/dof/dof.mat
+        src/materials/dof/dofDownsample.mat
+        src/materials/dof/dofCombine.mat
+        src/materials/dof/dofTiles.mat
+        src/materials/dof/dofDilate.mat
+        src/materials/dof/dofMipmap.mat
+        src/materials/dof/dofMedian.mat
         src/materials/blitLow.mat
         src/materials/blitMedium.mat
         src/materials/blitHigh.mat
-        src/materials/bloomDownsample.mat
-        src/materials/bloomUpsample.mat
-        src/materials/bilateralBlur.mat
-        src/materials/mipmapDepth.mat
+        src/materials/bloom/bloomDownsample.mat
+        src/materials/bloom/bloomUpsample.mat
+        src/materials/ssao/bilateralBlur.mat
+        src/materials/ssao/mipmapDepth.mat
         src/materials/skybox.mat
-        src/materials/sao.mat
+        src/materials/ssao/sao.mat
         src/materials/separableGaussianBlur.mat
-        src/materials/fxaa.mat
+        src/materials/antiAliasing/fxaa.mat
+        src/materials/antiAliasing/taa.mat
 )
 
 # Embed the binary resource blob for materials.
@@ -186,9 +194,16 @@ message(STATUS "DFG LUT size set to ${DFG_LUT_SIZE}x${DFG_LUT_SIZE}")
 # ==================================================================================================
 # Definitions
 # ==================================================================================================
+
 # "2" corresponds to SYSTRACE_TAG_FILEMENT (See: utils/Systrace.h)
 add_definitions(-DSYSTRACE_TAG=2)
 add_definitions(-DFILAMENT_DFG_LUT_SIZE=${DFG_LUT_SIZE})
+add_definitions(
+    -DFILAMENT_PER_RENDER_PASS_ARENA_SIZE_IN_MB=${FILAMENT_PER_RENDER_PASS_ARENA_SIZE_IN_MB}
+    -DFILAMENT_PER_FRAME_COMMANDS_SIZE_IN_MB=${FILAMENT_PER_FRAME_COMMANDS_SIZE_IN_MB}
+    -DFILAMENT_MIN_COMMAND_BUFFERS_SIZE_IN_MB=${FILAMENT_MIN_COMMAND_BUFFERS_SIZE_IN_MB}
+    -DFILAMENT_OPENGL_HANDLE_ARENA_SIZE_IN_MB=${FILAMENT_OPENGL_HANDLE_ARENA_SIZE_IN_MB}
+)
 
 # ==================================================================================================
 # Generate all .filamat: default material, skyboxes, and post-process
@@ -221,6 +236,7 @@ endforeach()
 add_custom_command(
         OUTPUT "${MATERIAL_DIR}/colorGrading.filamat"
         DEPENDS ../shaders/src/dithering.fs
+        DEPENDS ../shaders/src/vignette.fs
         DEPENDS ../shaders/src/bloom.fs
         APPEND
 )
@@ -228,24 +244,49 @@ add_custom_command(
 add_custom_command(
         OUTPUT "${MATERIAL_DIR}/colorGradingAsSubpass.filamat"
         DEPENDS ../shaders/src/dithering.fs
+        DEPENDS ../shaders/src/vignette.fs
         APPEND
 )
 
 add_custom_command(
         OUTPUT "${MATERIAL_DIR}/fxaa.filamat"
-        DEPENDS ../shaders/src/fxaa.fs
+        DEPENDS src/materials/antiAliasing/fxaa.fs
+        APPEND
+)
+
+add_custom_command(
+        OUTPUT "${MATERIAL_DIR}/dofDownsample.filamat"
+        DEPENDS src/materials/dof/dofUtils.fs
+        APPEND
+)
+
+add_custom_command(
+        OUTPUT "${MATERIAL_DIR}/dofMipmap.filamat"
+        DEPENDS src/materials/dof/dofUtils.fs
+        APPEND
+)
+
+add_custom_command(
+        OUTPUT "${MATERIAL_DIR}/dofDilate.filamat"
+        DEPENDS src/materials/dof/dofUtils.fs
         APPEND
 )
 
 add_custom_command(
         OUTPUT "${MATERIAL_DIR}/dof.filamat"
-        DEPENDS src/materials/dofUtils.fs
+        DEPENDS src/materials/dof/dofUtils.fs
         APPEND
 )
 
 add_custom_command(
-        OUTPUT "${MATERIAL_DIR}/dofBlur.filamat"
-        DEPENDS src/materials/dofUtils.fs
+        OUTPUT "${MATERIAL_DIR}/dofMedian.filamat"
+        DEPENDS src/materials/dof/dofUtils.fs
+        APPEND
+)
+
+add_custom_command(
+        OUTPUT "${MATERIAL_DIR}/dofCombine.filamat"
+        DEPENDS src/materials/dof/dofUtils.fs
         APPEND
 )
 
@@ -297,13 +338,6 @@ target_link_libraries(${TARGET} PUBLIC geometry) # TODO: remove this dependency 
 target_link_libraries(${TARGET} PUBLIC filaflat)
 target_link_libraries(${TARGET} PUBLIC filabridge)
 target_link_libraries(${TARGET} PUBLIC ibl)
-
-# By default, link in matdbg for Desktop + Debug only since it pulls in filamat and a web server.
-if (CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT IOS AND NOT ANDROID AND NOT WEBGL)
-    option(FILAMENT_ENABLE_MATDBG "Enable the material debugger" ON)
-else()
-    option(FILAMENT_ENABLE_MATDBG "Enable the material debugger" OFF)
-endif()
 
 if (FILAMENT_ENABLE_MATDBG)
     target_link_libraries(${TARGET} PUBLIC matdbg)
@@ -376,6 +410,7 @@ set(INSTALL_TYPE ARCHIVE)
 install(TARGETS ${TARGET} ${INSTALL_TYPE} DESTINATION lib/${DIST_DIR})
 install(DIRECTORY ${PUBLIC_HDR_DIR}/filament DESTINATION include)
 install(FILES "README.md" DESTINATION .)
+install(FILES "../LICENSE" DESTINATION .)
 
 # ==================================================================================================
 # Sub-projects
@@ -383,4 +418,3 @@ install(FILES "README.md" DESTINATION .)
 add_subdirectory(backend)
 add_subdirectory(test)
 add_subdirectory(benchmark)
-add_subdirectory(tools)

@@ -86,6 +86,7 @@ struct App {
     } viewOptions;
 
     View::DepthOfFieldOptions dofOptions;
+    View::VignetteOptions vignetteOptions;
 
     struct Scene {
         Entity groundPlane;
@@ -95,7 +96,8 @@ struct App {
     } scene;
 
     struct ColorGradingOptions {
-        bool enabled = false;
+        bool enabled = true;
+        int quality = static_cast<int>(ColorGrading::QualityLevel::MEDIUM);
         int toneMapping = static_cast<int>(ColorGrading::ToneMapping::ACES_LEGACY);
         int temperature = 0;
         int tint = 0;
@@ -116,20 +118,48 @@ struct App {
         math::float3 midPoint{1.0f};
         math::float3 scale{1.0f};
         bool linkedCurves = false;
+
+        bool operator!=(const ColorGradingOptions &rhs) const {
+            return !(rhs == *this);
+        }
+
+        bool operator==(const ColorGradingOptions &rhs) const {
+            return enabled == rhs.enabled &&
+                   quality == rhs.quality &&
+                   toneMapping == rhs.toneMapping &&
+                   temperature == rhs.temperature &&
+                   outRed == rhs.outRed &&
+                   outGreen == rhs.outGreen &&
+                   outBlue == rhs.outBlue &&
+                   shadows == rhs.shadows &&
+                   midtones == rhs.midtones &&
+                   highlights == rhs.highlights &&
+                   ranges == rhs.ranges &&
+                   slope == rhs.slope &&
+                   offset == rhs.offset &&
+                   power == rhs.power &&
+                   contrast == rhs.contrast &&
+                   vibrance == rhs.vibrance &&
+                   saturation == rhs.saturation &&
+                   gamma == rhs.gamma &&
+                   midPoint == rhs.midPoint &&
+                   scale == rhs.scale;
+        }
     } colorGradingOptions;
 
-    ColorGradingOptions lastColorGradingOptions;
+    // zero-initialized so that the first time through is always dirty.
+    ColorGradingOptions lastColorGradingOptions = { 0 };
 
     ColorGrading* colorGrading = nullptr;
 
     float rangePlot[1024 * 3];
     float curvePlot[1024 * 3];
 
-  // 0 is the default "free camera". Additional cameras come from the gltf file.
+    // 0 is the default "free camera". Additional cameras come from the gltf file.
     int currentCamera = 0;
 };
 
-static const char* DEFAULT_IBL = "venetian_crossroads_2k";
+static const char* DEFAULT_IBL = "default_env";
 
 static void printUsage(char* name) {
     std::string exec_name(Path(name).getName());
@@ -406,9 +436,11 @@ static void colorGradingUI(App& app) {
 
         ImGui::Indent();
         ImGui::Checkbox("Enabled##colorGrading", &colorGrading.enabled);
+        ImGui::Combo("Quality##colorGradingQuality", &colorGrading.quality,
+                "Low\0Medium\0High\0Ultra\0\0");
         ImGui::Combo("Tone-mapping", &colorGrading.toneMapping,
                 "Linear\0ACES (legacy)\0ACES\0Filmic\0Uchimura\0Reinhard\0Display Range\0\0");
-        if (ImGui::CollapsingHeader("While balance")) {
+        if (ImGui::CollapsingHeader("White balance")) {
             ImGui::SliderInt("Temperature", &colorGrading.temperature, -100, 100);
             ImGui::SliderInt("Tint", &colorGrading.tint, -100, 100);
         }
@@ -620,6 +652,7 @@ int main(int argc, char** argv) {
         configuration.engine = app.engine;
         configuration.gltfPath = gltfPath.c_str();
         configuration.recomputeBoundingBoxes = app.recomputeAabb;
+        configuration.normalizeSkinningWeights = true;
         if (!app.resourceLoader) {
             app.resourceLoader = new gltfio::ResourceLoader(configuration);
         }
@@ -638,7 +671,7 @@ int main(int argc, char** argv) {
     auto setup = [&](Engine* engine, View* view, Scene* scene) {
         app.engine = engine;
         app.names = new NameComponentManager(EntityManager::get());
-        app.viewer = new SimpleViewer(engine, scene, view, 0, 410);
+        app.viewer = new SimpleViewer(engine, scene, view, 410);
         app.materials = (app.materialSource == GENERATE_SHADERS) ?
                 createMaterialGenerator(engine) : createUbershaderLoader(engine);
         app.loader = AssetLoader::create({engine, app.materials, app.names });
@@ -688,7 +721,15 @@ int main(int argc, char** argv) {
                 ImGui::SliderFloat("ISO", &app.viewOptions.cameraISO, 25.0f, 6400.0f);
                 ImGui::Checkbox("DoF", &app.dofOptions.enabled);
                 ImGui::SliderFloat("Focus distance", &app.dofOptions.focusDistance, 0.0f, 30.0f);
-                ImGui::SliderFloat("Blur scale", &app.dofOptions.blurScale, 0.1f, 10.0f);
+                ImGui::SliderFloat("Blur scale", &app.dofOptions.cocScale, 0.1f, 10.0f);
+
+                if (ImGui::CollapsingHeader("Vignette")) {
+                    ImGui::Checkbox("Enabled##vignetteEnabled", &app.vignetteOptions.enabled);
+                    ImGui::SliderFloat("Mid point", &app.vignetteOptions.midPoint, 0.0f, 1.0f);
+                    ImGui::SliderFloat("Roundness", &app.vignetteOptions.roundness, 0.0f, 1.0f);
+                    ImGui::SliderFloat("Feather", &app.vignetteOptions.feather, 0.0f, 1.0f);
+                    ImGui::ColorEdit3("Color##vignetteColor", &app.vignetteOptions.color.r);
+                }
 
                 const utils::Entity* cameras = app.asset->getCameraEntities();
                 const size_t cameraCount = app.asset->getCameraEntityCount();
@@ -734,6 +775,7 @@ int main(int argc, char** argv) {
         engine->destroy(app.scene.groundVertexBuffer);
         engine->destroy(app.scene.groundIndexBuffer);
         engine->destroy(app.scene.groundMaterial);
+        engine->destroy(app.colorGrading);
 
         delete app.viewer;
         delete app.materials;
@@ -748,25 +790,6 @@ int main(int argc, char** argv) {
         // Add renderables to the scene as they become ready.
         app.viewer->populateScene(app.asset, !app.actualSize);
 
-        const size_t cameraCount = app.asset->getCameraEntityCount();
-        if (app.currentCamera == 0) {
-            view->setCamera(app.mainCamera);
-        } else {
-            const int gltfCamera = app.currentCamera - 1;
-            if (gltfCamera < cameraCount) {
-                const utils::Entity* cameras = app.asset->getCameraEntities();
-                Camera* c = engine->getCameraComponent(cameras[gltfCamera]);
-                assert(c);
-                view->setCamera(c);
-
-                // Override the aspect ratio in the glTF file and adjust the aspect ratio of this
-                // camera to the viewport.
-                const Viewport& vp = view->getViewport();
-                double aspectRatio = (double) vp.width / vp.height;
-                c->setScaling(double4 {1.0, aspectRatio, 1.0, 1.0});
-            }
-        }
-
         app.viewer->applyAnimation(now);
     };
 
@@ -779,7 +802,7 @@ int main(int argc, char** argv) {
         }
         const Viewport& vp = view->getViewport();
         double aspectRatio = (double) vp.width / vp.height;
-        camera.setScaling(double4 {1.0, aspectRatio, 1.0, 1.0});
+        camera.setScaling(double4 {1.0 / aspectRatio, 1.0, 1.0, 1.0});
     };
 
     auto gui = [&app](Engine* engine, View* view) {
@@ -794,6 +817,27 @@ int main(int argc, char** argv) {
         rcm.setLayerMask(instance,
                 0xff, app.viewOptions.groundPlaneEnabled ? 0xff : 0x00);
 
+        const size_t cameraCount = app.asset->getCameraEntityCount();
+        view->setCamera(app.mainCamera);
+        if (app.currentCamera > 0) {
+            const int gltfCamera = app.currentCamera - 1;
+            if (gltfCamera < cameraCount) {
+                const utils::Entity* cameras = app.asset->getCameraEntities();
+                Camera* c = engine->getCameraComponent(cameras[gltfCamera]);
+                assert(c);
+                view->setCamera(c);
+
+                // Override the aspect ratio in the glTF file and adjust the aspect ratio of this
+                // camera to the viewport.
+                const Viewport& vp = view->getViewport();
+                double aspectRatio = (double) vp.width / vp.height;
+                c->setScaling(double4 {1.0 / aspectRatio, 1.0, 1.0, 1.0});
+            } else {
+                // gltfCamera is out of bounds. Reset camera selection to main camera.
+                app.currentCamera = 0;
+            }
+        }
+
         Camera& camera = view->getCamera();
         camera.setExposure(
                 app.viewOptions.cameraAperture,
@@ -801,6 +845,7 @@ int main(int argc, char** argv) {
                 app.viewOptions.cameraISO);
 
         view->setDepthOfFieldOptions(app.dofOptions);
+        view->setVignetteOptions(app.vignetteOptions);
 
         app.scene.groundMaterial->setDefaultParameter(
                 "strength", app.viewOptions.groundShadowStrength);
@@ -818,10 +863,10 @@ int main(int argc, char** argv) {
         });
 
         if (app.colorGradingOptions.enabled) {
-            if (memcmp(&app.colorGradingOptions, &app.lastColorGradingOptions,
-                    sizeof(App::ColorGradingOptions))) {
-                App::ColorGradingOptions& options = app.colorGradingOptions;
-                ColorGrading* colorGrading = ColorGrading::Builder()
+            if (app.colorGradingOptions != app.lastColorGradingOptions) {
+                App::ColorGradingOptions &options = app.colorGradingOptions;
+                ColorGrading *colorGrading = ColorGrading::Builder()
+                        .quality(static_cast<ColorGrading::QualityLevel>(options.quality))
                         .whiteBalance(options.temperature / 100.0f, options.tint / 100.0f)
                         .channelMixer(options.outRed, options.outGreen, options.outBlue)
                         .shadowsMidtonesHighlights(
@@ -843,7 +888,7 @@ int main(int argc, char** argv) {
                 }
 
                 app.colorGrading = colorGrading;
-                app.lastColorGradingOptions = options;
+                app.lastColorGradingOptions = app.colorGradingOptions;
             }
             view->setColorGrading(app.colorGrading);
         } else {

@@ -48,11 +48,11 @@ struct X11Functions {
 
 Driver* PlatformVkLinux::createDriver(void* const sharedContext) noexcept {
     ASSERT_PRECONDITION(sharedContext == nullptr, "Vulkan does not support shared contexts.");
-    const char* requestedExtensions[] = {
+    const char* requiredInstanceExtensions[] = {
         "VK_KHR_surface",
         "VK_KHR_xlib_surface",
 #if VK_ENABLE_VALIDATION
-        "VK_EXT_debug_report",
+        "VK_EXT_debug_utils",
 #endif
     };
     g_x11.library = dlopen(LIBRARY_X11, RTLD_LOCAL | RTLD_NOW);
@@ -62,8 +62,8 @@ Driver* PlatformVkLinux::createDriver(void* const sharedContext) noexcept {
     g_x11.getGeometry = (X11_GET_GEOMETRY) dlsym(g_x11.library, "XGetGeometry");
     mDisplay = g_x11.openDisplay(NULL);
     ASSERT_PRECONDITION(mDisplay, "Unable to open X11 display.");
-    return VulkanDriverFactory::create(this, requestedExtensions,
-            sizeof(requestedExtensions) / sizeof(requestedExtensions[0]));
+    return VulkanDriverFactory::create(this, requiredInstanceExtensions,
+            sizeof(requiredInstanceExtensions) / sizeof(requiredInstanceExtensions[0]));
 }
 
 void* PlatformVkLinux::createVkSurfaceKHR(void* nativeWindow, void* instance) noexcept {
@@ -77,15 +77,5 @@ void* PlatformVkLinux::createVkSurfaceKHR(void* nativeWindow, void* instance) no
     ASSERT_POSTCONDITION(result == VK_SUCCESS, "vkCreateXlibSurfaceKHR error.");
     return surface;
 }
-
-void PlatformVkLinux::getClientExtent(void* window, uint32_t* width, uint32_t* height) noexcept {
-    Window root;
-    int x = 0;
-    int y = 0;
-    unsigned int border_width = 0;
-    unsigned int depth = 0;
-    g_x11.getGeometry(mDisplay, (Window) window, &root, &x, &y, width, height, &border_width,
-            &depth);
- }
 
 } // namespace filament

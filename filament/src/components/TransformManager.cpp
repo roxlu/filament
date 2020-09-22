@@ -199,6 +199,7 @@ void FTransformManager::insertNode(Instance i, Instance parent) noexcept {
 
     manager[i].parent = parent;
     manager[i].prev = 0;
+    manager[i].next = 0;
     if (parent) {
         // we insert ourselves first in the parent's list
         Instance next = manager[parent].firstChild;
@@ -272,7 +273,7 @@ void FTransformManager::removeNode(Instance i) noexcept {
     }
 
 #ifndef NDEBUG
-    // we no longer have a parent or siblings. we don't really have to clear thos fields
+    // we no longer have a parent or siblings. we don't really have to clear those fields
     // so we only do it in DEBUG mode
     manager[i].parent = 0;
     manager[i].prev = 0;

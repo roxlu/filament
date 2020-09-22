@@ -47,7 +47,7 @@ import java.nio.Buffer;
  *
  *     assetLoader = AssetLoader(engine, MaterialProvider(engine), EntityManager.get())
  *
- *     filamentAsset = assets.open("models/lucy.gltf").use { input ->
+ *     filamentAsset = assets.open("models/lucy.gltf").use { input -&gt;
  *         val bytes = ByteArray(input.available())
  *         input.read(bytes)
  *         assetLoader.createAssetFromJson(ByteBuffer.wrap(bytes))!!
@@ -129,12 +129,12 @@ public class AssetLoader {
     }
 
     /**
-     * Consumes the contents of a glTF 2.0 file and produces a master asset with one or more
+     * Consumes the contents of a glTF 2.0 file and produces a primary asset with one or more
      * instances.
      *
      * The given instance array must be sized to the desired number of instances. If successful,
-     * this method will populate the array with slave instances whose resources are shared with
-     * the master asset.
+     * this method will populate the array with secondary instances whose resources are shared with
+     * the primary asset.
      */
     @Nullable
     @SuppressWarnings("unused")

@@ -23,6 +23,8 @@ import androidx.annotation.Size;
 
 import java.util.EnumSet;
 
+import static com.google.android.filament.Asserts.assertFloat3In;
+import static com.google.android.filament.Asserts.assertFloat4In;
 import static com.google.android.filament.Colors.LinearColor;
 
 /**
@@ -70,7 +72,9 @@ public class View {
     private RenderTarget mRenderTarget;
     private BlendMode mBlendMode;
     private DepthOfFieldOptions mDepthOfFieldOptions;
+    private VignetteOptions mVignetteOptions;
     private ColorGrading mColorGrading;
+    private TemporalAntiAliasingOptions mTemporalAntiAliasingOptions;
 
     /**
      * Generic quality level.
@@ -135,8 +139,7 @@ public class View {
     }
 
     /**
-     * Options for Ambient Occlusion
-     * @see #setAmbientOcclusion
+     * Options for screen space Ambient Occlusion
      */
     public static class AmbientOcclusionOptions {
         /**
@@ -180,7 +183,34 @@ public class View {
          */
         @NonNull
         public QualityLevel upsampling = QualityLevel.LOW;
+
+        /**
+         * enable or disable screen space ambient occlusion
+         */
+        public boolean enabled = false;
+
+        /**
+         * Minimal angle to consider in radian. This is used to reduce the creases that can
+         * appear due to insufficiently tessellated geometry.
+         * For e.g. a good values to try could be around 0.2.
+         */
+        public float minHorizonAngleRad = 0.0f;
     }
+
+    /**
+     * Options for Temporal Anti-aliasing (TAA)
+     * @see View#setTemporalAntiAliasingOptions()
+     */
+    public static class TemporalAntiAliasingOptions {
+        /** reconstruction filter width typically between 0 (sharper, aliased) and 1 (smoother) */
+        public float filterWidth = 1.0f;
+
+        /** history feedback, between 0 (maximum temporal AA) and 1 (no temporal AA). */
+        public float feedback = 0.04f;
+
+        /** enables or disables temporal anti-aliasing */
+        public boolean enabled = false;
+    };
 
     /**
      * Options for controlling the Bloom effect
@@ -206,7 +236,7 @@ public class View {
      *              enabled for the dirt effect to work properly.
      * dirtStrength: Strength of the dirt texture.
      *
-     * @see setBloomOptions
+     * @see View#setBloomOptions
      */
     public static class BloomOptions {
 
@@ -260,6 +290,12 @@ public class View {
          * enable or disable bloom
          */
         public boolean enabled = false;
+
+        /**
+         * limit highlights to this value before bloom. Use +inf for no limiting.
+         * minimum value is 10.0.
+         */
+        public float highlight = 1000.0f;
     }
 
     /**
@@ -289,9 +325,10 @@ public class View {
         public float heightFalloff = 1.0f;
 
         /**
-         * fog's color (linear)
+         * Fog's color as a linear RGB color.
          */
         @NonNull
+        @Size(min = 3)
         public float[] color = { 0.5f, 0.5f, 0.5f };
 
         /**
@@ -305,9 +342,9 @@ public class View {
         public float inScatteringStart = 0.0f;
 
         /**
-         * size of in-scattering (>=0 to activate). Good values are >> 1 (e.g. ~10 - 100)
+         * size of in-scattering (>0 to activate). Good values are >> 1 (e.g. ~10 - 100)
          */
-        public float inScatteringSize = 0.0f;
+        public float inScatteringSize = -1.0f;
 
         /**
          * fog color will be modulated by the IBL color in the view direction
@@ -330,8 +367,17 @@ public class View {
         /** focus distance in world units */
         public float focusDistance = 10.0f;
 
-        /** scale factor controlling the amount of blur (values other than 1.0 are not physically correct)*/
-        public float blurScale = 1.0f;
+        /**
+         * circle of confusion scale factor (amount of blur)
+         *
+         * <p>cocScale can be used to set the depth of field blur independently from the camera
+         * aperture, e.g. for artistic reasons. This can be achieved by setting:</p>
+         * <code>
+         *      cocScale = cameraAperture / desiredDoFAperture
+         * </code>
+         *
+         */
+        public float cocScale = 1.0f;
 
         /** maximum aperture diameter in meters (zero to disable bokeh rotation) */
         public float maxApertureDiameter = 0.01f;
@@ -339,6 +385,40 @@ public class View {
         /** enable or disable Depth of field effect */
         public boolean enabled = false;
     };
+
+    /**
+     * Options to control the vignetting effect.
+     */
+    public static class VignetteOptions {
+        /**
+         * High values restrict the vignette closer to the corners, between 0 and 1.
+         */
+        public float midPoint = 0.5f;
+
+        /**
+         * Controls the shape of the vignette, from a rounded rectangle (0.0), to an oval (0.5),
+         * to a circle (1.0). The value must be between 0 and 1.
+         */
+        public float roundness = 0.5f;
+
+        /**
+         * Softening amount of the vignette effect, between 0 and 1.
+         */
+        public float feather = 0.5f;
+
+        /**
+         * Color of the vignette effect as a linear RGBA color. The alpha channel is currently
+         * ignored.
+         */
+        @NonNull
+        @Size(min = 4)
+        public float[] color = { 0.0f, 0.0f, 0.0f, 1.0f };
+
+        /**
+         * Enables or disables the vignette effect.
+         */
+        public boolean enabled = false;
+    }
 
     /**
      * Structure used to set the color precision for the rendering of a <code>View</code>.
@@ -366,9 +446,10 @@ public class View {
 
     /**
      * List of available ambient occlusion techniques.
-     *
+     * @deprecated use setAmbientOcclusionOptions instead
      * @see #setAmbientOcclusion
-    */
+     */
+    @Deprecated
     public enum AmbientOcclusion {
         NONE,
         SSAO
@@ -642,8 +723,41 @@ public class View {
      * @see RenderableManager.Builder#receiveShadows
      * @see RenderableManager.Builder#castShadows
      */
+    public void setShadowingEnabled(boolean enabled) {
+        nSetShadowingEnabled(getNativeObject(), enabled);
+    }
+
+    /**
+     * Enables or disables shadow mapping. Enabled by default.
+     *
+     * @deprecated Use {@link #setShadowingEnabled}
+     */
+    @Deprecated
     public void setShadowsEnabled(boolean enabled) {
-        nSetShadowsEnabled(getNativeObject(), enabled);
+        setShadowingEnabled(enabled);
+    }
+
+    /**
+     * @return whether shadowing is enabled
+     */
+    boolean isShadowingEnabled() {
+        return nIsShadowingEnabled(getNativeObject());
+    }
+
+    /**
+     * Enables or disables screen space refraction. Enabled by default.
+     *
+     * @param enabled true enables screen space refraction, false disables it.
+     */
+    public void setScreenSpaceRefractionEnabled(boolean enabled) {
+        nSetScreenSpaceRefractionEnabled(getNativeObject(), enabled);
+    }
+
+    /**
+     * @return whether screen space refraction is enabled
+     */
+    boolean isScreenSpaceRefractionEnabled() {
+        return nIsScreenSpaceRefractionEnabled(getNativeObject());
     }
 
     /**
@@ -652,6 +766,11 @@ public class View {
      * <p>
      * By default, the view's associated render target is null, which corresponds to the
      * SwapChain associated with the engine.
+     * </p>
+     *
+     * <p>
+     * A view with a custom render target cannot rely on Renderer.ClearOptions, which only applies
+     * to the SwapChain. Such view can use a Skybox instead.
      * </p>
      *
      * @param target render target associated with view, or null for the swap chain
@@ -723,6 +842,30 @@ public class View {
     @NonNull
     public AntiAliasing getAntiAliasing() {
         return AntiAliasing.values()[nGetAntiAliasing(getNativeObject())];
+    }
+
+    /**
+     * Enables or disable temporal anti-aliasing (TAA). Disabled by default.
+     *
+     * @param options temporal anti-aliasing options
+     */
+    public void setTemporalAntiAliasingOptions(@NonNull TemporalAntiAliasingOptions options) {
+        mTemporalAntiAliasingOptions = options;
+        nSetTemporalAntiAliasingOptions(getNativeObject(),
+                options.feedback, options.filterWidth, options.enabled);
+    }
+
+    /**
+     * Returns temporal anti-aliasing options.
+     *
+     * @return temporal anti-aliasing options
+     */
+    @NonNull
+    public TemporalAntiAliasingOptions getTemporalAntiAliasingOptions() {
+        if (mTemporalAntiAliasingOptions == null) {
+            mTemporalAntiAliasingOptions = new TemporalAntiAliasingOptions();
+        }
+        return mTemporalAntiAliasingOptions;
     }
 
     /**
@@ -939,18 +1082,20 @@ public class View {
 
     /**
      * Activates or deactivates ambient occlusion.
-     *
+     * @see #setAmbientOcclusionOptions
      * @param ao Type of ambient occlusion to use.
      */
+    @Deprecated
     public void setAmbientOcclusion(@NonNull AmbientOcclusion ao) {
         nSetAmbientOcclusion(getNativeObject(), ao.ordinal());
     }
 
     /**
      * Queries the type of ambient occlusion active for this View.
-     *
+     * @see #getAmbientOcclusionOptions
      * @return ambient occlusion type.
      */
+    @Deprecated
     @NonNull
     public AmbientOcclusion getAmbientOcclusion() {
         return AmbientOcclusion.values()[nGetAmbientOcclusion(getNativeObject())];
@@ -964,7 +1109,8 @@ public class View {
     public void setAmbientOcclusionOptions(@NonNull AmbientOcclusionOptions options) {
         mAmbientOcclusionOptions = options;
         nSetAmbientOcclusionOptions(getNativeObject(), options.radius, options.bias, options.power,
-                options.resolution, options.intensity, options.quality.ordinal(), options.upsampling.ordinal());
+                options.resolution, options.intensity, options.quality.ordinal(), options.upsampling.ordinal(),
+                options.enabled, options.minHorizonAngleRad);
     }
 
     /**
@@ -991,7 +1137,7 @@ public class View {
         nSetBloomOptions(getNativeObject(), options.dirt != null ? options.dirt.getNativeObject() : 0,
                 options.dirtStrength, options.strength, options.resolution,
                 options.anamorphism, options.levels, options.blendingMode.ordinal(),
-                options.threshold, options.enabled);
+                options.threshold, options.enabled, options.highlight);
     }
 
     /**
@@ -1009,12 +1155,42 @@ public class View {
     }
 
     /**
+     * Sets vignette options.
+     *
+     * @param options Options for vignetting.
+     * @see #getVignetteOptions
+     */
+    public void setVignetteOptions(@NonNull VignetteOptions options) {
+        assertFloat4In(options.color);
+        mVignetteOptions = options;
+        nSetVignetteOptions(getNativeObject(),
+                options.midPoint, options.roundness, options.feather,
+                options.color[0], options.color[1], options.color[2], options.color[3],
+                options.enabled);
+    }
+
+    /**
+     * Gets the vignette options
+     * @see #setVignetteOptions
+     *
+     * @return vignetting options currently set.
+     */
+    @NonNull
+    public VignetteOptions getVignetteOptions() {
+        if (mVignetteOptions == null) {
+            mVignetteOptions = new VignetteOptions();
+        }
+        return mVignetteOptions;
+    }
+
+    /**
      * Sets fog options.
      *
      * @param options Options for fog.
      * @see #getFogOptions
      */
     public void setFogOptions(@NonNull FogOptions options) {
+        assertFloat3In(options.color);
         mFogOptions = options;
         nSetFogOptions(getNativeObject(), options.distance, options.maximumOpacity, options.height,
                 options.heightFalloff, options.color[0], options.color[1], options.color[2],
@@ -1046,7 +1222,7 @@ public class View {
      */
     public void setDepthOfFieldOptions(@NonNull DepthOfFieldOptions options) {
         mDepthOfFieldOptions = options;
-        nSetDepthOfFieldOptions(getNativeObject(), options.focusDistance, options.blurScale, options.maxApertureDiameter, options.enabled);
+        nSetDepthOfFieldOptions(getNativeObject(), options.focusDistance, options.cocScale, options.maxApertureDiameter, options.enabled);
     }
 
     /**
@@ -1080,7 +1256,7 @@ public class View {
     private static native void nSetCamera(long nativeView, long nativeCamera);
     private static native void nSetViewport(long nativeView, int left, int bottom, int width, int height);
     private static native void nSetVisibleLayers(long nativeView, int select, int value);
-    private static native void nSetShadowsEnabled(long nativeView, boolean enabled);
+    private static native void nSetShadowingEnabled(long nativeView, boolean enabled);
     private static native void nSetRenderTarget(long nativeView, long nativeRenderTarget);
     private static native void nSetSampleCount(long nativeView, int count);
     private static native int nGetSampleCount(long nativeView);
@@ -1098,9 +1274,14 @@ public class View {
     private static native boolean nIsFrontFaceWindingInverted(long nativeView);
     private static native void nSetAmbientOcclusion(long nativeView, int ordinal);
     private static native int nGetAmbientOcclusion(long nativeView);
-    private static native void nSetAmbientOcclusionOptions(long nativeView, float radius, float bias, float power, float resolution, float intensity, int quality, int upsampling);
-    private static native void nSetBloomOptions(long nativeView, long dirtNativeObject, float dirtStrength, float strength, int resolution, float anamorphism, int levels, int blendMode, boolean threshold, boolean enabled);
+    private static native void nSetAmbientOcclusionOptions(long nativeView, float radius, float bias, float power, float resolution, float intensity, int quality, int upsampling, boolean enabled, float minHorizonAngleRad);
+    private static native void nSetBloomOptions(long nativeView, long dirtNativeObject, float dirtStrength, float strength, int resolution, float anamorphism, int levels, int blendMode, boolean threshold, boolean enabled, float highlight);
     private static native void nSetFogOptions(long nativeView, float distance, float maximumOpacity, float height, float heightFalloff, float v, float v1, float v2, float density, float inScatteringStart, float inScatteringSize, boolean fogColorFromIbl, boolean enabled);
     private static native void nSetBlendMode(long nativeView, int blendMode);
-    private static native void nSetDepthOfFieldOptions(long nativeView, float focusDistance, float blurScale, float maxApertureDiameter, boolean enabled);
+    private static native void nSetDepthOfFieldOptions(long nativeView, float focusDistance, float cocScale, float maxApertureDiameter, boolean enabled);
+    private static native void nSetVignetteOptions(long nativeView, float midPoint, float roundness, float feather, float r, float g, float b, float a, boolean enabled);
+    private static native void nSetTemporalAntiAliasingOptions(long nativeView, float feedback, float filterWidth, boolean enabled);
+    private static native boolean nIsShadowingEnabled(long nativeView);
+    private static native void nSetScreenSpaceRefractionEnabled(long nativeView, boolean enabled);
+    private static native boolean nIsScreenSpaceRefractionEnabled(long nativeView);
 }

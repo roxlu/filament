@@ -25,12 +25,15 @@
 
 struct CallbackJni {
 #ifdef ANDROID
-    jclass handlerClass;
-    jmethodID post;
+    jclass handlerClass = nullptr;
+    jmethodID post = nullptr;
 #endif
-    jclass executorClass;
-    jmethodID execute;
+    jclass executorClass = nullptr;
+    jmethodID execute = nullptr;
 };
+
+void acquireCallbackJni(JNIEnv* env, CallbackJni& callbackUtils);
+void releaseCallbackJni(JNIEnv* env, CallbackJni callbackUtils, jobject handler, jobject callback);
 
 struct JniBufferCallback {
     static JniBufferCallback* make(filament::Engine* engine,

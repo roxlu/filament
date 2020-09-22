@@ -92,20 +92,20 @@ ChunkContainer const& MaterialParser::getChunkContainer() const noexcept {
     return mImpl.mChunkContainer;
 }
 
-bool MaterialParser::parse() noexcept {
+MaterialParser::ParseResult MaterialParser::parse() noexcept {
     ChunkContainer& cc = getChunkContainer();
     if (cc.parse()) {
         if (!cc.hasChunk(mImpl.mMaterialTag) || !cc.hasChunk(mImpl.mDictionaryTag)) {
-            return false;
+            return ParseResult::ERROR_MISSING_BACKEND;
         }
         if (!DictionaryReader::unflatten(cc, mImpl.mDictionaryTag, mImpl.mBlobDictionary)) {
-            return false;
+            return ParseResult::ERROR_OTHER;
         }
         if (!mImpl.mMaterialChunk.readIndex(mImpl.mMaterialTag)) {
-            return false;
+            return ParseResult::ERROR_OTHER;
         }
     }
-    return true;
+    return ParseResult::SUCCESS;
 }
 
 // Accessors
@@ -287,9 +287,9 @@ bool ChunkUniformInterfaceBlock::unflatten(Unflattener& unflattener,
 
     for (uint64_t i = 0; i < numFields; i++) {
         CString fieldName;
-        uint64_t fieldSize;
-        uint8_t fieldType;
-        uint8_t fieldPrecision;
+        uint64_t fieldSize = 0;
+        uint8_t fieldType = 0;
+        uint8_t fieldPrecision = 0;
 
         if (!unflattener.read(&fieldName)) {
             return false;
@@ -334,10 +334,10 @@ bool ChunkSamplerInterfaceBlock::unflatten(Unflattener& unflattener,
 
     for (uint64_t i = 0; i < numFields; i++) {
         CString fieldName;
-        uint8_t fieldType;
-        uint8_t fieldFormat;
-        uint8_t fieldPrecision;
-        bool fieldMultisample;
+        uint8_t fieldType = 0;
+        uint8_t fieldFormat = 0;
+        uint8_t fieldPrecision = 0;
+        bool fieldMultisample = false;
 
         if (!unflattener.read(&fieldName)) {
             return false;

@@ -23,6 +23,7 @@ set(PUBLIC_HDRS
 
 set(SRCS
     src/CommonWriter.h
+    src/CommonWriter.cpp
     src/DebugServer.cpp
     src/JsonWriter.cpp
     src/ShaderReplacer.cpp
@@ -86,8 +87,6 @@ target_include_directories(${TARGET} PUBLIC ${PUBLIC_HDR_DIR})
 # ==================================================================================================
 # Compiler flags
 # ==================================================================================================
-
-target_compile_options(${TARGET} PRIVATE $<$<PLATFORM_ID:Linux>:-fPIC>)
 
 if (MSVC)
     target_compile_options(${TARGET} PRIVATE $<$<CONFIG:Release>:/fp:fast>)

@@ -34,6 +34,25 @@ Filament.vectorToArray = function(vector) {
     return result;
 };
 
+Filament.shadowOptions = function(overrides) {
+    const options = {
+        mapSize: 1024,
+        shadowCascades: 1,
+        constantBias: 0.001,
+        normalBias: 1.0,
+        shadowFar: 0.0,
+        shadowNearHint: 1.0,
+        shadowFarHint: 100.0,
+        stable: false,
+        polygonOffsetConstant: 0.5,
+        polygonOffsetSlope: 2.0,
+        screenSpaceContactShadows: false,
+        stepCount: 8,
+        maxShadowDistance: 0.3
+    };
+    return Object.assign(options, overrides);
+};
+
 Filament.loadClassExtensions = function() {
 
     /// Engine ::core class::
@@ -88,6 +107,7 @@ Filament.loadClassExtensions = function() {
     };
 
     /// createIblFromKtx ::method:: Utility that creates an [IndirectLight] from a KTX file.
+    /// NOTE: To prevent a leak, please be sure to destroy the associated reflections texture.
     /// buffer ::argument:: asset string, or Uint8Array, or [Buffer] with KTX file contents
     /// options ::argument:: Options dictionary.
     /// ::retval:: [IndirectLight]
@@ -99,6 +119,7 @@ Filament.loadClassExtensions = function() {
     };
 
     /// createSkyFromKtx ::method:: Utility function that creates a [Skybox] from a KTX file.
+    /// NOTE: To prevent a leak, please be sure to destroy the associated texture.
     /// buffer ::argument:: asset string, or Uint8Array, or [Buffer] with KTX file contents
     /// options ::argument:: Options dictionary.
     /// ::retval:: [Skybox]
@@ -153,6 +174,38 @@ Filament.loadClassExtensions = function() {
         return new Filament.gltfio$AssetLoader(this, materials);
     };
 
+    /// addEntities ::method::
+    /// entities ::argument:: array of entities
+    /// This method is equivalent to calling `addEntity` on each item in the array.
+    Filament.Scene.prototype.addEntities = function(entities) {
+        const vector = new Filament.EntityVector();
+        for (const entity of entities) {
+            vector.push_back(entity);
+        }
+        this._addEntities(vector);
+    };
+
+    /// removeEntities ::method::
+    /// entities ::argument:: array of entities
+    /// This method is equivalent to calling `remove` on each item in the array.
+    Filament.Scene.prototype.removeEntities = function(entities) {
+        const vector = new Filament.EntityVector();
+        for (const entity of entities) {
+            vector.push_back(entity);
+        }
+        this._removeEntities(vector);
+    };
+
+    /// setShadowOptions ::method::
+    /// instance ::argument:: Instance of a light component obtained from `getInstance`.
+    /// overrides ::argument:: Dictionary with one or more of the following properties: \
+    /// mapSize, shadowCascades, constantBias, normalBias, shadowFar, shadowNearHint, \
+    /// shadowFarHint, stable, polygonOffsetConstant, polygonOffsetSlope, \
+    // screenSpaceContactShadows, stepCount, maxShadowDistance.
+    Filament.LightManager.prototype.setShadowOptions = function(instance, overrides) {
+        this._setShadowOptions(instance, Filament.shadowOptions(overrides));
+    };
+
     /// setClearOptions ::method::
     /// overrides ::argument:: Dictionary with one or more of the following properties: \
     /// clearColor, clear, discard.
@@ -184,11 +237,11 @@ Filament.loadClassExtensions = function() {
 
     /// setDepthOfFieldOptions ::method::
     /// overrides ::argument:: Dictionary with one or more of the following properties: \
-    /// focusDistance, blurScale, maxApertureDiameter, enabled.
+    /// focusDistance, cocScale, maxApertureDiameter, enabled.
     Filament.View.prototype.setDepthOfFieldOptions = function(overrides) {
         const options = {
             focusDistance: 10.0,
-            blurScale: 1.0,
+            cocScale: 1.0,
             maxApertureDiameter: 0.01,
             enabled: false
         };
@@ -198,7 +251,8 @@ Filament.loadClassExtensions = function() {
 
     /// setBloomOptions ::method::
     /// overrides ::argument:: Dictionary with one or more of the following properties: \
-    /// dirtStrength, strength, resolution, anomorphism, levels, blendMode, threshold, enabled, dirt.
+    /// dirtStrength, strength, resolution, anomorphism, levels, blendMode, threshold, enabled.
+    /// NOTE: dirt texture is not yet supported in the JavaScript API.
     Filament.View.prototype.setBloomOptions = function(overrides) {
         const options = {
             dirtStrength: 0.2,
@@ -206,13 +260,49 @@ Filament.loadClassExtensions = function() {
             resolution: 360,
             anamorphism: 1.0,
             levels: 6,
-            blendMode: Filament.View$BloomOptions$BloomMode.ADD,
+            blendMode: Filament.View$BloomOptions$BlendMode.ADD,
             threshold: true,
             enabled: false,
             dirt: null
         };
         Object.assign(options, overrides);
         this._setBloomOptions(options);
+    };
+
+    /// setFogOptions ::method::
+    /// overrides ::argument:: Dictionary with one or more of the following properties: \
+    /// distance, maximumOpacity, height, heightFalloff, color, density, inScatteringStart,
+    /// inScatteringSize, fogColorFromIbl, enabled.
+    Filament.View.prototype.setFogOptions = function(overrides) {
+        const options = {
+            distance:  0.0,
+            maximumOpacity:  1.0,
+            height:  0.0,
+            heightFalloff:  1.0,
+            color: .5,
+            density:  0.1,
+            inScatteringStart:  0.0,
+            inScatteringSize:  -1.0,
+            fogColorFromIbl:  false,
+            enabled:  false
+        };
+        Object.assign(options, overrides);
+        this._setFogOptions(options);
+    };
+
+    /// setVignetteOptions ::method::
+    /// overrides ::argument:: Dictionary with one or more of the following properties: \
+    /// midPoint, roundness, feather, color, enabled.
+    Filament.View.prototype.setVignetteOptions = function(overrides) {
+        const options = {
+            midPoint: 0.5,
+            roundness: 0.5,
+            feather: 0.5,
+            color: [0, 0, 0, 1],
+            enabled: false
+        };
+        Object.assign(options, overrides);
+        this._setVignetteOptions(options);
     };
 
     /// VertexBuffer ::core class::
@@ -240,6 +330,10 @@ Filament.loadClassExtensions = function() {
         buffer.delete();
     };
 
+    Filament.LightManager$Builder.prototype.shadowOptions = function(overrides) {
+        return this._shadowOptions(Filament.shadowOptions(overrides));
+    };
+
     Filament.RenderableManager$Builder.prototype.build =
     Filament.LightManager$Builder.prototype.build =
         function(engine, entity) {
@@ -248,6 +342,7 @@ Filament.loadClassExtensions = function() {
             return result;
         };
 
+    Filament.ColorGrading$Builder.prototype.build =
     Filament.RenderTarget$Builder.prototype.build =
     Filament.VertexBuffer$Builder.prototype.build =
     Filament.IndexBuffer$Builder.prototype.build =
@@ -284,10 +379,60 @@ Filament.loadClassExtensions = function() {
         pbd.delete();
     }
 
+    Filament.SurfaceOrientation$Builder.prototype.normals = function(buffer, stride = 0) {
+        buffer = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+        this.norPointer = Filament._malloc(buffer.byteLength);
+        Filament.HEAPU8.set(buffer, this.norPointer);
+        this._normals(this.norPointer, stride);
+    };
+
+    Filament.SurfaceOrientation$Builder.prototype.uvs = function(buffer, stride = 0) {
+        buffer = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+        this.uvsPointer = Filament._malloc(buffer.byteLength);
+        Filament.HEAPU8.set(buffer, this.uvsPointer);
+        this._uvs(this.uvsPointer, stride);
+    };
+
+    Filament.SurfaceOrientation$Builder.prototype.positions = function(buffer, stride = 0) {
+        buffer = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+        this.posPointer = Filament._malloc(buffer.byteLength);
+        Filament.HEAPU8.set(buffer, this.posPointer);
+        this._positions(this.posPointer, stride);
+    };
+
+    Filament.SurfaceOrientation$Builder.prototype.triangles16 = function(buffer, stride = 0) {
+        buffer = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+        this.t16Pointer = Filament._malloc(buffer.byteLength);
+        Filament.HEAPU8.set(buffer, this.t16Pointer);
+        this._triangles16(this.t16Pointer, stride);
+    };
+
+    Filament.SurfaceOrientation$Builder.prototype.triangles32 = function(buffer, stride = 0) {
+        buffer = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+        this.t32Pointer = Filament._malloc(buffer.byteLength);
+        Filament.HEAPU8.set(buffer, this.t32Pointer);
+        this._triangles32(this.t32Pointer, stride);
+    };
+
     Filament.SurfaceOrientation$Builder.prototype.build = function() {
         const result = this._build();
         this.delete();
+        if ('norPointer' in this) Filament._free(this.norPointer);
+        if ('uvsPointer' in this) Filament._free(this.uvsPointer);
+        if ('posPointer' in this) Filament._free(this.posPointer);
+        if ('t16Pointer' in this) Filament._free(this.t16Pointer);
+        if ('t32Pointer' in this) Filament._free(this.t32Pointer);
         return result;
+    };
+
+    Filament.SurfaceOrientation.prototype.getQuats = function(nverts) {
+        const attribType = Filament.VertexBuffer$AttributeType.SHORT4;
+        const quatsBufferSize = 8 * nverts;
+        const quatsBuffer = Filament._malloc(quatsBufferSize);
+        this._getQuats(quatsBuffer, nverts, attribType);
+        const arrayBuffer = Filament.HEAPU8.subarray(quatsBuffer, quatsBuffer + quatsBufferSize).slice().buffer;
+        Filament._free(quatsBuffer);
+        return new Int16Array(arrayBuffer);
     };
 
     Filament.gltfio$AssetLoader.prototype.createAssetFromJson = function(buffer) {
@@ -335,12 +480,20 @@ Filament.loadClassExtensions = function() {
     //
     // The optional asyncInterval argument allows clients to control how decoding is amortized
     // over time. It represents the number of milliseconds between each texture decoding task.
+    //
+    // The optional config argument is an object with boolean fields `normalizeSkinningWeights` and
+    // `recomputeBoundingBoxes`.
     Filament.gltfio$FilamentAsset.prototype.loadResources = function(onDone, onFetched, basePath,
-            asyncInterval) {
+            asyncInterval, config) {
         const asset = this;
         const engine = this.getEngine();
         const names = this.getResourceUris();
         const interval = asyncInterval || 30;
+        const defaults = {
+            normalizeSkinningWeights: true,
+            recomputeBoundingBoxes: false
+        };
+        config = Object.assign(defaults, config || {});
 
         basePath = basePath || document.location;
         onFetched = onFetched || ((name) => {});
@@ -359,7 +512,9 @@ Filament.loadClassExtensions = function() {
         }
 
         // Construct a resource loader and start decoding after all textures are fetched.
-        const resourceLoader = new Filament.gltfio$ResourceLoader(engine, false, false);
+        const resourceLoader = new Filament.gltfio$ResourceLoader(engine,
+                config.normalizeSkinningWeights,
+                config.recomputeBoundingBoxes);
         const onComplete = () => {
             resourceLoader.asyncBeginLoad(asset);
 

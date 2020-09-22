@@ -12,7 +12,6 @@ Filament. Latest versions are available on the [project page](https://github.com
 - `mipgen`, Generates a series of miplevels from a source image.
 - `normal-blending`, Tool to blend normal maps
 - `roughness-prefilter`, Pre-filters a roughness map from a normal map to reduce aliasing
-- `skygen`, Physically-based sky environment texture generator
 - `specular-color`, Computes the specular color of conductors based on spectral data
 
 You can refer to the individual documentation files in `docs/` for more information.
@@ -95,7 +94,7 @@ main: main.o
 	$(CC) -Llib/x86_64/ main.o $(FILAMENT_LIBS) -lpthread -lc++ -ldl -o main
 
 main.o: main.cpp
-	$(CC) -Iinclude/ -std=c++14 -pthread -c main.cpp
+	$(CC) -Iinclude/ -std=c++17 -pthread -c main.cpp
 
 clean:
 	rm -f main main.o
@@ -114,7 +113,7 @@ main: main.o
 	$(CC) -Llib/x86_64/ main.o $(FILAMENT_LIBS) $(FRAMEWORKS) -o main
 
 main.o: main.cpp
-	$(CC) -Iinclude/ -std=c++14 -c main.cpp
+	$(CC) -Iinclude/ -std=c++17 -c main.cpp
 
 clean:
 	rm -f main main.o
@@ -134,8 +133,8 @@ When building Filament from source, the `USE_STATIC_CRT` CMake option can be
 used to change the run-time library version.
 
 ```
-FILAMENT_LIBS=filament.lib backend.lib bluegl.lib filabridge.lib filaflat.lib utils.lib \
-              geometry.lib smol-v.lib ibl.lib
+FILAMENT_LIBS=filament.lib backend.lib bluegl.lib bluevk.lib filabridge.lib filaflat.lib \
+              utils.lib geometry.lib smol-v.lib ibl.lib
 CC=cl.exe
 
 main.exe: main.obj
@@ -143,7 +142,7 @@ main.exe: main.obj
 	gdi32.lib user32.lib opengl32.lib
 
 main.obj: main.cpp
-	$(CC) /MT /Iinclude\\ /std:c++14 /c main.cpp
+	$(CC) /MT /Iinclude\\ /std:c++17 /c main.cpp
 
 clean:
 	del main.exe main.obj

@@ -14,14 +14,14 @@
  * limitations under the License.
  */
 
-#include "FrameGraph.h"
+#include <fg/FrameGraph.h>
 
-#include "FrameGraphPassResources.h"
-#include "FrameGraphHandle.h"
+#include <fg/FrameGraphPassResources.h>
+#include <fg/FrameGraphHandle.h>
 
-#include "fg/ResourceNode.h"
-#include "fg/PassNode.h"
-#include "fg/VirtualResource.h"
+#include "fg/fg/ResourceNode.h"
+#include "fg/fg/PassNode.h"
+#include "fg/fg/VirtualResource.h"
 
 #include "details/Engine.h"
 
@@ -86,23 +86,21 @@ FrameGraph::Builder& FrameGraph::Builder::sideEffect() noexcept {
 
 // ------------------------------------------------------------------------------------------------
 
-FrameGraph::FrameGraph(fg::ResourceAllocatorInterface& resourceAllocator)
+FrameGraph::FrameGraph(ResourceAllocatorInterface& resourceAllocator)
         : mResourceAllocator(resourceAllocator),
-          mArena("FrameGraph Arena", 65536), // TODO: the Area will eventually come from outside
+          mArena("FrameGraph Arena", 131072), // TODO: the Area will eventually come from outside
           mPassNodes(mArena),
           mResourceNodes(mArena),
           mResourceNodeEntries(mArena),
           mResourceEntries(mArena) {
-    mPassNodes.reserve(32);
-    mResourceNodes.reserve(64);
-    mResourceNodeEntries.reserve(64);
-    mResourceEntries.reserve(48);
-//    slog.d << "PassNode: " << sizeof(PassNode) << io::endl;
-//    slog.d << "ResourceNode: " << sizeof(ResourceNode) << io::endl;
-//    slog.d << "Resource: " << sizeof(Resource) << io::endl;
-//    slog.d << "RenderTargetResourceEntry: " << sizeof(RenderTargetResourceEntry) << io::endl;
-//    slog.d << "Alias: " << sizeof(Alias) << io::endl;
-//    slog.d << "Vector: " << sizeof(Vector<fg::PassNode>) << io::endl;
+    mPassNodes.reserve(64);             // ~16K
+    mResourceNodes.reserve(256);        // ~4K
+    mResourceNodeEntries.reserve(256);  // ~8K
+    mResourceEntries.reserve(256);      // ~8K
+//    slog.d << "mPassNodes: " << sizeof(std::decay<decltype(mPassNodes.front())>::type) << io::endl;
+//    slog.d << "mResourceNodes: " << sizeof(std::decay<decltype(mResourceNodes.front())>::type) << io::endl;
+//    slog.d << "mResourceNodeEntries: " << sizeof(std::decay<decltype(mResourceNodeEntries.front())>::type) << io::endl;
+//    slog.d << "mResourceEntries: " << sizeof(std::decay<decltype(mResourceEntries.front())>::type) << io::endl;
 }
 
 FrameGraph::~FrameGraph() = default;
@@ -148,13 +146,14 @@ void FrameGraph::moveResourceBase(FrameGraphHandle fromHandle, FrameGraphHandle 
 
     // The pass that is writing to "fromHandle" no longer does (and might be culled)
     // (note: there can only be a single pass that can be a writer)
-    PassNode* const pass = from.writer;
-    if (pass) {
+    if (from.writerIndex.isValid()) {
+        PassNode* const pass = &mPassNodes[from.writerIndex.index];
+        assert(pass);
         auto pos = std::find_if(pass->writes.begin(), pass->writes.end(),
                 [fromHandle](auto handle) { return handle == fromHandle; });
         assert(pos != pass->writes.end());
         pass->writes.erase(pos);
-        from.writer = to.writer;
+        from.writerIndex = to.writerIndex;
     }
 
     // The 'to' node becomes the 'from' node and therefore inherits passes that are reading
@@ -181,7 +180,7 @@ void FrameGraph::moveResource(
     ResourceNode& to   = getResourceNode(toHandle);
     Vector<ResourceNode*>& resourceNodes = mResourceNodes;
 
-    // NOTE: We're guaranteed that fromHandle's resource is unique (i.e. it's the only hande that
+    // NOTE: We're guaranteed that fromHandle's resource is unique (i.e. it's the only handle that
     //       references this resource -- this is because FrameGraphRenderTarget can't be
     //       written to).
 
@@ -205,7 +204,7 @@ void FrameGraph::moveResource(
     // find all ResourceNode of type RenderTargetResource that have 'to' as attachment and replace
     // them with the 'from' ResourceNode
     for (auto& cur : resourceNodes) {
-        auto p = cur->resource->asRenderTargetResourceEntry();
+        auto *p = cur->resource->asRenderTargetResourceEntry();
         if (p) {
             if (hasAttachment(p, to.resource)) {
                 cur = &from;
@@ -284,12 +283,11 @@ FrameGraph& FrameGraph::compile() noexcept {
             resourceNodes[resource.index]->readerCount++;
         }
 
-#ifndef NDEBUG
+        // set the writers
         for (FrameGraphHandle resource : pass.writes) {
             assert(resource.isValid());
-            assert(resourceNodes[resource.index]->writer == &pass);
+            resourceNodes[resource.index]->writer = &pass;
         }
-#endif
     }
 
     /*
@@ -372,8 +370,8 @@ FrameGraph& FrameGraph::compile() noexcept {
     for (size_t priority = 0; priority < 2; priority++) {
         for (UniquePtr<fg::ResourceEntryBase> const& resource : resourceRegistry) {
             if (resource->priority == priority && resource->refs) {
-                auto pFirst = resource->first;
-                auto pLast = resource->last;
+                auto *pFirst = resource->first;
+                auto *pLast = resource->last;
                 assert(!pFirst == !pLast);
                 if (pFirst && pLast) {
                     pFirst->devirtualize.push_back(resource.get());
@@ -486,14 +484,24 @@ void FrameGraph::export_graphviz(utils::io::ostream& out, const char* viewName) 
             "\\nrefs:" << node->resource->refs;
 
 #if UTILS_HAS_RTTI
-        auto textureResource = dynamic_cast<ResourceEntry<FrameGraphTexture> const*>(subresource);
+        const auto *textureResource = dynamic_cast<ResourceEntry<FrameGraphTexture> const*>(subresource);
         if (textureResource) {
             out << ", " << (bool(textureResource->descriptor.usage & TextureUsage::SAMPLEABLE) ? "texture" : "renderbuffer");
+            out << "\\n" << textureResource->descriptor.width << "x" << textureResource->descriptor.height;
+            if (bool(textureResource->descriptor.usage & TextureUsage::SUBPASS_INPUT)) {
+                out << " SI";
+            }
+            if (textureResource->descriptor.samples > 1) {
+                out << " MS";
+            }
         }
 #endif
-        auto rendertarget = subresource->asRenderTargetResourceEntry();
+        auto *rendertarget = subresource->asRenderTargetResourceEntry();
         if (rendertarget) {
             out << ", " << "RenderTarget";
+            if (rendertarget->descriptor.samples > 1) {
+                out << " MS";
+            }
         }
         out << "\", style=filled, fillcolor="
             << ((subresource->imported) ?

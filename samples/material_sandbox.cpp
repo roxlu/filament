@@ -602,12 +602,19 @@ static void gui(filament::Engine* engine, filament::View*) {
             ImGui::SliderFloat("IBL", &params.iblIntensity, 0.0f, 50000.0f);
             ImGui::SliderAngle("Rotation", &params.iblRotation);
             if (ImGui::CollapsingHeader("SSAO")) {
+                int quality = (int)params.ssaoOptions.quality;
+                bool upsampling = params.ssaoOptions.upsampling != View::QualityLevel::LOW;
                 DebugRegistry& debug = engine->getDebugRegistry();
-                ImGui::Checkbox("Enabled##ssao", &params.ssao);
+                ImGui::Checkbox("Enabled##ssao", &params.ssaoOptions.enabled);
                 ImGui::SliderFloat("Radius", &params.ssaoOptions.radius, 0.05f, 5.0f);
                 ImGui::SliderFloat("Bias", &params.ssaoOptions.bias, 0.0f, 0.01f, "%.6f");
+                ImGui::SliderFloat("Min Horizon angle", &params.ssaoOptions.minHorizonAngleRad, 0.0f, (float)M_PI_4, "%.6f");
                 ImGui::SliderFloat("Intensity", &params.ssaoOptions.intensity, 0.0f, 4.0f);
                 ImGui::SliderFloat("Power", &params.ssaoOptions.power, 0.0f, 4.0f);
+                ImGui::SliderInt("Quality", &quality, 0, 3);
+                ImGui::Checkbox("High quality upsampling", &upsampling);
+                params.ssaoOptions.upsampling = upsampling ? View::QualityLevel::HIGH : View::QualityLevel::LOW;
+                params.ssaoOptions.quality = (View::QualityLevel)quality;
             }
             ImGui::Unindent();
         }
@@ -650,7 +657,7 @@ static void gui(filament::Engine* engine, filament::View*) {
             ImGui::SliderFloat("Height", &params.fogOptions.height, 0.0f, 100.0f);
             ImGui::SliderFloat("Height Falloff", &params.fogOptions.heightFalloff, 0.0f, 10.0f);
             ImGui::SliderFloat("Scattering Start", &params.fogOptions.inScatteringStart, 0.0f, 100.0f);
-            ImGui::SliderFloat("Scattering Size", &params.fogOptions.inScatteringSize, 0.0f, 100.0f);
+            ImGui::SliderFloat("Scattering Size", &params.fogOptions.inScatteringSize, 0.1f, 100.0f);
             ImGui::Checkbox("Color from IBL", &params.fogOptions.fogColorFromIbl);
             ImGui::ColorPicker3("Color", params.fogOptions.color.v);
             ImGui::Unindent();
@@ -659,11 +666,20 @@ static void gui(filament::Engine* engine, filament::View*) {
         if (ImGui::CollapsingHeader("Post-processing")) {
             ImGui::Indent();
             ImGui::Checkbox("MSAA 4x", &params.msaa);
+            ImGui::Checkbox("TAA", &params.taaOptions.enabled);
+            if (params.taaOptions.enabled) {
+                ImGui::Indent();
+                ImGui::SliderFloat("feedback", &params.taaOptions.feedback, 0.0f, 1.0f);
+                ImGui::SliderFloat("filter", &params.taaOptions.filterWidth, 0.02f, 2.0f);
+                ImGui::Unindent();
+            }
             ImGui::Checkbox("FXAA", &params.fxaa);
             ImGui::Checkbox("Bloom", &params.bloomOptions.enabled);
             if (params.bloomOptions.enabled) {
+                ImGui::Indent();
                 ImGui::SliderFloat("Strength", &params.bloomOptions.strength, 0.0f, 1.0f);
                 ImGui::SliderFloat("Dirt", &params.bloomOptions.dirtStrength, 0.0f, 1.0f);
+                ImGui::Unindent();
             }
             ImGui::Checkbox("Dithering", &params.dithering);
             ImGui::Unindent();
@@ -923,14 +939,12 @@ static void preRender(filament::Engine* engine, filament::View* view, filament::
     view->setDithering(g_params.dithering ? View::Dithering::TEMPORAL : View::Dithering::NONE);
     view->setBloomOptions(g_params.bloomOptions);
     view->setFogOptions(g_params.fogOptions);
+    view->setTemporalAntiAliasingOptions(g_params.taaOptions);
     view->setSampleCount((uint8_t) (g_params.msaa ? 4 : 1));
-    view->setAmbientOcclusion(
-            g_params.ssao ? View::AmbientOcclusion::SSAO : View::AmbientOcclusion::NONE);
     view->setAmbientOcclusionOptions(g_params.ssaoOptions);
 
     if (g_params.colorGrading) {
-        if (memcmp(&g_params.colorGradingOptions, &g_lastColorGradingOptions,
-                sizeof(ColorGradingOptions))) {
+        if (g_params.colorGradingOptions != g_lastColorGradingOptions) {
             ColorGradingOptions &options = g_params.colorGradingOptions;
             ColorGrading *colorGrading = ColorGrading::Builder()
                     .whiteBalance(options.temperature / 100.0f, options.tint / 100.0f)

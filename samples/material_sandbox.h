@@ -81,6 +81,31 @@ struct ColorGradingOptions {
     math::float3 midPoint{1.0f};
     math::float3 scale{1.0f};
     bool linkedCurves = false;
+
+    bool operator!=(const ColorGradingOptions &rhs) const {
+        return !(rhs == *this);
+    }
+
+    bool operator==(const ColorGradingOptions &rhs) const {
+        return toneMapping == rhs.toneMapping &&
+               temperature == rhs.temperature &&
+               outRed == rhs.outRed &&
+               outGreen == rhs.outGreen &&
+               outBlue == rhs.outBlue &&
+               shadows == rhs.shadows &&
+               midtones == rhs.midtones &&
+               highlights == rhs.highlights &&
+               ranges == rhs.ranges &&
+               slope == rhs.slope &&
+               offset == rhs.offset &&
+               power == rhs.power &&
+               contrast == rhs.contrast &&
+               vibrance == rhs.vibrance &&
+               saturation == rhs.saturation &&
+               gamma == rhs.gamma &&
+               midPoint == rhs.midPoint &&
+               scale == rhs.scale;
+    }
 };
 
 struct SandboxParameters {
@@ -141,10 +166,10 @@ struct SandboxParameters {
     float constantBias = 0.001;
     float polygonOffsetConstant = 0.5;
     float polygonOffsetSlope = 2.0;
-    bool ssao = false;
     View::AmbientOcclusionOptions ssaoOptions;
     View::BloomOptions bloomOptions;
     View::FogOptions fogOptions;
+    View::TemporalAntiAliasingOptions taaOptions;
     bool screenSpaceContactShadows = false;
     int stepCount = 8;
     float maxShadowDistance = 0.3;

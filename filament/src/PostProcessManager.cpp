@@ -35,7 +35,11 @@
 
 #include <filament/MaterialEnums.h>
 
-#include <utils/Log.h>
+#include <math/half.h>
+#include <math/mat2.h>
+
+#include <algorithm>
+#include <limits>
 
 namespace filament {
 
@@ -46,13 +50,25 @@ using namespace backend;
 static constexpr uint8_t kMaxBloomLevels = 12u;
 static_assert(kMaxBloomLevels >= 3, "We require at least 3 bloom levels");
 
+constexpr static float halton(unsigned int i, unsigned int b) noexcept {
+    // skipping a bunch of entries makes the average of the sequence closer to 0.5
+    i += 409;
+    float f = 1.0f;
+    float r = 0.0f;
+    while (i > 0u) {
+        f /= float(b);
+        r += f * float(i % b);
+        i /= b;
+    }
+    return r;
+}
+
 // ------------------------------------------------------------------------------------------------
 
 PostProcessManager::PostProcessMaterial::PostProcessMaterial() noexcept {
     mEngine = nullptr;
     mData = nullptr;
     mMaterial = nullptr;            // aliased to mEngine
-    mMaterialInstance = nullptr;    // aliased to mData
 }
 
 PostProcessManager::PostProcessMaterial::PostProcessMaterial(FEngine& engine,
@@ -89,36 +105,40 @@ PostProcessManager::PostProcessMaterial::~PostProcessMaterial() {
 void PostProcessManager::PostProcessMaterial::terminate(FEngine& engine) noexcept {
     if (mHasMaterial) {
         engine.destroy(mMaterial);
+// this is only needed for validation in the dtor in debug builds
+#ifndef NDEBUG
         mMaterial = nullptr;
-        mMaterialInstance = nullptr;
         mHasMaterial = false;
     } else {
         mEngine = nullptr;
         mData = nullptr;
+#endif
     }
 }
 
-void PostProcessManager::PostProcessMaterial::assertMaterial() const noexcept {
+UTILS_NOINLINE
+FMaterial* PostProcessManager::PostProcessMaterial::loadMaterial() const noexcept {
+    // TODO: After all materials using this class have been converted to the post-process material
+    //       domain, load both OPAQUE and TRANSPARENT variants here.
+    mHasMaterial = true;
+    mMaterial = upcast(Material::Builder().package(mData, mSize).build(*mEngine));
+    return mMaterial;
+}
+
+FMaterial* PostProcessManager::PostProcessMaterial::assertMaterial() const noexcept {
     if (UTILS_UNLIKELY(!mHasMaterial)) {
-        // TODO: After all materials using this class have been converted to the post-process material
-        //       domain, load both OPAQUE and TRANSPARENT variants here.
-        mMaterial = upcast(Material::Builder().package(mData, mSize).build(*mEngine));
-        mMaterialInstance = mMaterial->getDefaultInstance();
-        mHasMaterial = true;
+        return loadMaterial();
     }
+    return mMaterial;
 }
 
 PipelineState PostProcessManager::PostProcessMaterial::getPipelineState(uint8_t variant) const noexcept {
-    assertMaterial();
+    FMaterial* const material = assertMaterial();
     return {
-            .program = mMaterial->getProgram(variant),
-            .rasterState = mMaterial->getRasterState(),
-            .scissor = mMaterialInstance->getScissor()
+            .program = material->getProgram(variant),
+            .rasterState = material->getRasterState(),
+            .scissor = material->getDefaultInstance()->getScissor()
     };
-}
-
-PipelineState PostProcessManager::PostProcessMaterial::getPipelineState() const noexcept {
-    return getPipelineState(0);
 }
 
 FMaterial* PostProcessManager::PostProcessMaterial::getMaterial() const {
@@ -127,13 +147,42 @@ FMaterial* PostProcessManager::PostProcessMaterial::getMaterial() const {
 }
 
 FMaterialInstance* PostProcessManager::PostProcessMaterial::getMaterialInstance() const {
-    assertMaterial();
-    return mMaterialInstance;
+    FMaterial* const material = assertMaterial();
+    return material->getDefaultInstance();
 }
 
 // ------------------------------------------------------------------------------------------------
 
-PostProcessManager::PostProcessManager(FEngine& engine) noexcept : mEngine(engine) {
+PostProcessManager::PostProcessManager(FEngine& engine) noexcept
+        : mEngine(engine),
+          mHaltonSamples{
+                  { filament::halton( 0, 2), filament::halton( 0, 3) },
+                  { filament::halton( 1, 2), filament::halton( 1, 3) },
+                  { filament::halton( 2, 2), filament::halton( 2, 3) },
+                  { filament::halton( 3, 2), filament::halton( 3, 3) },
+                  { filament::halton( 4, 2), filament::halton( 4, 3) },
+                  { filament::halton( 5, 2), filament::halton( 5, 3) },
+                  { filament::halton( 6, 2), filament::halton( 6, 3) },
+                  { filament::halton( 7, 2), filament::halton( 7, 3) },
+                  { filament::halton( 8, 2), filament::halton( 8, 3) },
+                  { filament::halton( 9, 2), filament::halton( 9, 3) },
+                  { filament::halton(10, 2), filament::halton(10, 3) },
+                  { filament::halton(11, 2), filament::halton(11, 3) },
+                  { filament::halton(12, 2), filament::halton(12, 3) },
+                  { filament::halton(13, 2), filament::halton(13, 3) },
+                  { filament::halton(14, 2), filament::halton(14, 3) },
+                  { filament::halton(15, 2), filament::halton(15, 3) }}
+{
+}
+
+UTILS_NOINLINE
+void PostProcessManager::registerPostProcessMaterial(utils::StaticString name, uint8_t const* data, int size) {
+    mMaterialRegistry.try_emplace(name, mEngine, data, size);
+}
+
+PostProcessManager::PostProcessMaterial& PostProcessManager::getPostProcessMaterial(utils::StaticString name) noexcept {
+    assert(mMaterialRegistry.find(name) != mMaterialRegistry.end());
+    return mMaterialRegistry[name];
 }
 
 #define MATERIAL(n) MATERIALS_ ## n ## _DATA, MATERIALS_ ## n ## _SIZE
@@ -142,22 +191,26 @@ void PostProcessManager::init() noexcept {
     auto& engine = mEngine;
     DriverApi& driver = engine.getDriverApi();
 
-    mSSAO                   = { engine, MATERIAL(SAO) };
-    mMipmapDepth            = { engine, MATERIAL(MIPMAPDEPTH) };
-    mBilateralBlur          = { engine, MATERIAL(BILATERALBLUR) };
-    mSeparableGaussianBlur  = { engine, MATERIAL(SEPARABLEGAUSSIANBLUR) };
-    mBloomDownsample        = { engine, MATERIAL(BLOOMDOWNSAMPLE) };
-    mBloomUpsample          = { engine, MATERIAL(BLOOMUPSAMPLE) };
-    mBlit[0]                = { engine, MATERIAL(BLITLOW) };
-    mBlit[1]                = { engine, MATERIAL(BLITMEDIUM) };
-    mBlit[2]                = { engine, MATERIAL(BLITHIGH) };
-    mColorGrading           = { engine, MATERIAL(COLORGRADING) };
-    mFxaa                   = { engine, MATERIAL(FXAA) };
-    mDoFBlur                = { engine, MATERIAL(DOFBLUR) };
-    mDoF                    = { engine, MATERIAL(DOF) };
-    if (driver.isFrameBufferFetchSupported()) {
-        mColorGradingAsSubpass = { engine, MATERIAL(COLORGRADINGASSUBPASS) };
-    }
+    registerPostProcessMaterial("sao", MATERIAL(SAO));
+    registerPostProcessMaterial("mipmapDepth", MATERIAL(MIPMAPDEPTH));
+    registerPostProcessMaterial("bilateralBlur", MATERIAL(BILATERALBLUR));
+    registerPostProcessMaterial("separableGaussianBlur", MATERIAL(SEPARABLEGAUSSIANBLUR));
+    registerPostProcessMaterial("bloomDownsample", MATERIAL(BLOOMDOWNSAMPLE));
+    registerPostProcessMaterial("bloomUpsample", MATERIAL(BLOOMUPSAMPLE));
+    registerPostProcessMaterial("blitLow", MATERIAL(BLITLOW));
+    registerPostProcessMaterial("blitMedium", MATERIAL(BLITMEDIUM));
+    registerPostProcessMaterial("blitHigh", MATERIAL(BLITHIGH));
+    registerPostProcessMaterial("colorGrading", MATERIAL(COLORGRADING));
+    registerPostProcessMaterial("colorGradingAsSubpass", MATERIAL(COLORGRADINGASSUBPASS));
+    registerPostProcessMaterial("fxaa", MATERIAL(FXAA));
+    registerPostProcessMaterial("taa", MATERIAL(TAA));
+    registerPostProcessMaterial("dofDownsample", MATERIAL(DOFDOWNSAMPLE));
+    registerPostProcessMaterial("dofMipmap", MATERIAL(DOFMIPMAP));
+    registerPostProcessMaterial("dofTiles", MATERIAL(DOFTILES));
+    registerPostProcessMaterial("dofDilate", MATERIAL(DOFDILATE));
+    registerPostProcessMaterial("dof", MATERIAL(DOF));
+    registerPostProcessMaterial("dofMedian", MATERIAL(DOFMEDIAN));
+    registerPostProcessMaterial("dofCombine", MATERIAL(DOFCOMBINE));
 
     // UBO storage size.
     // The effective kernel size is (kMaxPositiveKernelSize - 1) * 4 + 1.
@@ -165,19 +218,26 @@ void PostProcessManager::init() noexcept {
     // taking advantage of linear filtering produces an effective kernel of 8+1+8=17 samples
     // and because it's a separable filter, the effective 2D filter kernel size is 17*17
     // The total number of samples needed over the two passes is 18.
-    mSeparableGaussianBlurKernelStorageSize = mSeparableGaussianBlur.getMaterial()->reflect("kernel")->size;
+    auto& separableGaussianBlur = getPostProcessMaterial("separableGaussianBlur");
+    mSeparableGaussianBlurKernelStorageSize = separableGaussianBlur.getMaterial()->reflect("kernel")->size;
 
     mDummyOneTexture = driver.createTexture(SamplerType::SAMPLER_2D, 1,
-            TextureFormat::RGBA8, 0, 1, 1, 1, TextureUsage::DEFAULT);
+            TextureFormat::RGBA8, 1, 1, 1, 1, TextureUsage::DEFAULT);
+
+    mDummyOneTextureArray = driver.createTexture(SamplerType::SAMPLER_2D_ARRAY, 1,
+            TextureFormat::RGBA8, 1, 1, 1, 1, TextureUsage::DEFAULT);
 
     mDummyZeroTexture = driver.createTexture(SamplerType::SAMPLER_2D, 1,
-            TextureFormat::RGBA8, 0, 1, 1, 1, TextureUsage::DEFAULT);
+            TextureFormat::RGBA8, 1, 1, 1, 1, TextureUsage::DEFAULT);
 
     PixelBufferDescriptor dataOne(driver.allocate(4), 4, PixelDataFormat::RGBA, PixelDataType::UBYTE);
+    PixelBufferDescriptor dataOneArray(driver.allocate(4), 4, PixelDataFormat::RGBA, PixelDataType::UBYTE);
     PixelBufferDescriptor dataZero(driver.allocate(4), 4, PixelDataFormat::RGBA, PixelDataType::UBYTE);
     *static_cast<uint32_t *>(dataOne.buffer) = 0xFFFFFFFF;
+    *static_cast<uint32_t *>(dataOneArray.buffer) = 0xFFFFFFFF;
     *static_cast<uint32_t *>(dataZero.buffer) = 0;
     driver.update2DImage(mDummyOneTexture, 0, 0, 0, 1, 1, std::move(dataOne));
+    driver.update3DImage(mDummyOneTextureArray, 0, 0, 0, 0, 1, 1, 1, std::move(dataOneArray));
     driver.update2DImage(mDummyZeroTexture, 0, 0, 0, 1, 1, std::move(dataZero));
 }
 
@@ -185,20 +245,29 @@ void PostProcessManager::terminate(DriverApi& driver) noexcept {
     FEngine& engine = mEngine;
     driver.destroyTexture(mDummyOneTexture);
     driver.destroyTexture(mDummyZeroTexture);
-    mSSAO.terminate(engine);
-    mMipmapDepth.terminate(engine);
-    mBilateralBlur.terminate(engine);
-    mSeparableGaussianBlur.terminate(engine);
-    mBloomDownsample.terminate(engine);
-    mBloomUpsample.terminate(engine);
-    mBlit[0].terminate(engine);
-    mBlit[1].terminate(engine);
-    mBlit[2].terminate(engine);
-    mColorGrading.terminate(engine);
-    mColorGradingAsSubpass.terminate(engine);
-    mFxaa.terminate(engine);
-    mDoFBlur.terminate(engine);
-    mDoF.terminate(engine);
+    auto first = mMaterialRegistry.begin();
+    auto last = mMaterialRegistry.end();
+    while (first != last) {
+        first.value().terminate(engine);
+        ++first;
+    }
+}
+
+UTILS_NOINLINE
+void PostProcessManager::commitAndRender(FrameGraphRenderTarget const& out,
+        PostProcessMaterial const& material, uint8_t variant, DriverApi& driver) const noexcept {
+    FMaterialInstance* const mi = material.getMaterialInstance();
+    mi->commit(driver);
+    mi->use(driver);
+    driver.beginRenderPass(out.target, out.params);
+    driver.draw(material.getPipelineState(variant), mEngine.getFullScreenRenderPrimitive());
+    driver.endRenderPass();
+}
+
+UTILS_ALWAYS_INLINE
+void PostProcessManager::commitAndRender(FrameGraphRenderTarget const& out,
+        PostProcessMaterial const& material, DriverApi& driver) const noexcept {
+    commitAndRender(out, material, 0, driver);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -227,10 +296,10 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::structure(FrameGraph& fg,
     // generate depth pass at the requested resolution
     auto& structurePass = fg.addPass<StructurePassData>("Structure Pass",
             [&](FrameGraph::Builder& builder, auto& data) {
-                data.depth = builder.createTexture("Depth Buffer", {
+                data.depth = builder.createTexture("Structure Buffer", {
                         .width = width, .height = height,
                         .levels = uint8_t(levelCount),
-                        .format = TextureFormat::DEPTH24 });
+                        .format = TextureFormat::DEPTH32F });
 
                 data.depth = builder.write(builder.read(data.depth));
 
@@ -262,8 +331,6 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::structure(FrameGraph& fg,
 FrameGraphId<FrameGraphTexture> PostProcessManager::mipmapPass(FrameGraph& fg,
         FrameGraphId<FrameGraphTexture> input, size_t level) noexcept {
 
-    Handle<HwRenderPrimitive> fullScreenRenderPrimitive = mEngine.getFullScreenRenderPrimitive();
-
     struct DepthMipData {
         FrameGraphId<FrameGraphTexture> in;
         FrameGraphId<FrameGraphTexture> out;
@@ -285,24 +352,21 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::mipmapPass(FrameGraph& fg,
                 auto in = resources.getTexture(data.in);
                 auto out = resources.get(data.rt);
 
-                FMaterialInstance* const mi = mMipmapDepth.getMaterialInstance();
-                mi->setParameter("depth", in, { /* uses texelFetch */ });
+                auto& material = getPostProcessMaterial("mipmapDepth");
+                FMaterialInstance* const mi = material.getMaterialInstance();
+                mi->setParameter("depth", in, { .filterMin = SamplerMinFilter::NEAREST_MIPMAP_NEAREST });
                 mi->setParameter("level", uint32_t(level));
-                mi->commit(driver);
-                mi->use(driver);
 
-                driver.beginRenderPass(out.target, out.params);
-                driver.draw(mMipmapDepth.getPipelineState(), fullScreenRenderPrimitive);
-                driver.endRenderPass();
+                commitAndRender(out, material, driver);
             });
 
     return depthMipmapPass.getData().out;
 }
 
-FrameGraphId<FrameGraphTexture> PostProcessManager::screenSpaceAmbientOclusion(
+FrameGraphId<FrameGraphTexture> PostProcessManager::screenSpaceAmbientOcclusion(
         FrameGraph& fg, RenderPass& pass,
         filament::Viewport const& svp, const CameraInfo& cameraInfo,
-        View::AmbientOcclusionOptions const& options) noexcept {
+        View::AmbientOcclusionOptions options) noexcept {
 
     FEngine& engine = mEngine;
     Handle<HwRenderPrimitive> fullScreenRenderPrimitive = engine.getFullScreenRenderPrimitive();
@@ -312,6 +376,50 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::screenSpaceAmbientOclusion(
 
     const size_t levelCount = fg.getDescriptor(depth).levels;
 
+    // With q the standard deviation,
+    // A gaussian filter requires 6q-1 values to keep its gaussian nature
+    // (see en.wikipedia.org/wiki/Gaussian_filter)
+    // More intuitively, 2q is the width of the filter in pixels.
+    BilateralPassConfig config = {
+            // TODO: "bilateralThreshold" should be a user-settable parameter
+            //       z-distance that constitute an edge for bilateral filtering
+            .bilateralThreshold = 0.0625f
+    };
+
+    float sampleCount{};
+    float spiralTurns{};
+    switch (options.quality) {
+        default:
+        case View::QualityLevel::LOW:
+            config.kernelSize = 11;
+            config.standardDeviation = 4.0f;
+            config.scale = 2.0f;
+            sampleCount = 7.0f;
+            spiralTurns = 5.0f;
+            break;
+        case View::QualityLevel::MEDIUM:
+            config.kernelSize = 11;
+            config.standardDeviation = 4.0f;
+            config.scale = 2.0f;
+            sampleCount = 11.0f;
+            spiralTurns = 9.0f;
+            break;
+        case View::QualityLevel::HIGH:
+            config.kernelSize = 23;
+            config.standardDeviation = 8.0f;
+            config.scale = 1.0f;
+            sampleCount = 16.0f;
+            spiralTurns = 10.0f;
+            break;
+        case View::QualityLevel::ULTRA:
+            config.kernelSize = 23;
+            config.standardDeviation = 8.0;
+            config.scale = 1.0f;
+            sampleCount = 32.0f;
+            spiralTurns = 14.0f;
+            break;
+    }
+
     /*
      * Our main SSAO pass
      */
@@ -319,7 +427,6 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::screenSpaceAmbientOclusion(
     struct SSAOPassData {
         FrameGraphId<FrameGraphTexture> depth;
         FrameGraphId<FrameGraphTexture> ssao;
-        View::AmbientOcclusionOptions options;
         FrameGraphRenderTargetHandle rt;
     };
 
@@ -327,7 +434,6 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::screenSpaceAmbientOclusion(
             [&](FrameGraph::Builder& builder, auto& data) {
                 auto const& desc = builder.getDescriptor(depth);
 
-                data.options = options;
                 data.depth = builder.sample(depth);
                 data.ssao = builder.createTexture("SSAO Buffer", {
                         .width = desc.width,
@@ -361,59 +467,41 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::screenSpaceAmbientOclusion(
 
                 // Where the falloff function peaks
                 const float peak = 0.1f * options.radius;
-                // We further scale the user intensity by 3, for a better default at intensity=1
-                const float intensity = (2.0f * F_PI * peak) * data.options.intensity * 3.0f;
+                const float intensity = (f::TAU * peak) * options.intensity;
                 // always square AO result, as it looks much better
-                const float power = data.options.power * 2.0f;
-
-                float sampleCount = 7.0f;
-                float spiralTurns = 5.0f;
-                switch (data.options.quality) {
-                    case View::QualityLevel::LOW:
-                        sampleCount = 7.0f;
-                        spiralTurns = 5.0f;
-                        break;
-                    case View::QualityLevel::MEDIUM:
-                        sampleCount = 11.0f;
-                        spiralTurns = 9.0f;
-                        break;
-                    case View::QualityLevel::HIGH:
-                        sampleCount = 16.0f;
-                        spiralTurns = 10.0f;
-                        break;
-                    case View::QualityLevel::ULTRA:
-                        sampleCount = 32.0f;
-                        spiralTurns = 14.0f;
-                        break;
-                }
+                const float power = options.power * 2.0f;
 
                 const auto invProjection = inverse(cameraInfo.projection);
+                const float inc = (1.0f / (sampleCount - 0.5f)) * spiralTurns * f::TAU;
 
-                FMaterialInstance* const mi = mSSAO.getMaterialInstance();
+                auto& material = getPostProcessMaterial("sao");
+                FMaterialInstance* const mi = material.getMaterialInstance();
                 mi->setParameter("depth", depth, {
                         .filterMin = SamplerMinFilter::NEAREST_MIPMAP_NEAREST
                 });
                 mi->setParameter("resolution",
                         float4{ desc.width, desc.height, 1.0f / desc.width, 1.0f / desc.height });
-                mi->setParameter("invRadiusSquared", 1.0f / (data.options.radius * data.options.radius));
-                mi->setParameter("projectionScaleRadius", projectionScale * data.options.radius);
-                mi->setParameter("depthParams", float2{
-                        -cameraInfo.projection[3].z, cameraInfo.projection[2].z - 1.0 } * 0.5f);
+                mi->setParameter("invRadiusSquared", 1.0f / (options.radius * options.radius));
+                mi->setParameter("minHorizonAngleSineSquared", std::pow(std::sin(options.minHorizonAngleRad), 2.0f));
+                mi->setParameter("projectionScaleRadius", projectionScale * options.radius);
+                mi->setParameter("depthParams", cameraInfo.projection[3][2] * 0.5f);
+
                 mi->setParameter("positionParams", float2{
                         invProjection[0][0], invProjection[1][1] } * 2.0f);
                 mi->setParameter("peak2", peak * peak);
-                mi->setParameter("bias", data.options.bias);
+                mi->setParameter("bias", options.bias);
                 mi->setParameter("power", power);
-                mi->setParameter("intensity", intensity);
+                mi->setParameter("intensity", intensity / sampleCount);
                 mi->setParameter("maxLevel", uint32_t(levelCount - 1));
                 mi->setParameter("sampleCount", float2{ sampleCount, 1.0f / (sampleCount - 0.5f) });
                 mi->setParameter("spiralTurns", spiralTurns);
+                mi->setParameter("angleIncCosSin", float2{ std::cos(inc), std::sin(inc) });
                 mi->setParameter("invFarPlane", 1.0f / -cameraInfo.zf);
                 mi->commit(driver);
                 mi->use(driver);
 
-                PipelineState pipeline(mSSAO.getPipelineState());
-                pipeline.rasterState.depthFunc = RasterState::DepthFunc::G;
+                PipelineState pipeline(material.getPipelineState());
+                pipeline.rasterState.depthFunc = RasterState::DepthFunc::L;
 
                 driver.beginRenderPass(ssao.target, ssao.params);
                 driver.draw(pipeline, fullScreenRenderPrimitive);
@@ -429,11 +517,13 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::screenSpaceAmbientOclusion(
     const bool highQualitySampling =
             options.upsampling >= View::QualityLevel::HIGH && options.resolution < 1.0f;
 
-    ssao = bilateralBlurPass(fg, ssao, { 1, 0 }, cameraInfo.zf,
-            TextureFormat::RGB8);
+    ssao = bilateralBlurPass(fg, ssao, { config.scale, 0 }, cameraInfo.zf,
+            TextureFormat::RGB8,
+            config);
 
-    ssao = bilateralBlurPass(fg, ssao, { 0, 1 }, cameraInfo.zf,
-            highQualitySampling ? TextureFormat::RGB8 : TextureFormat::R8);
+    ssao = bilateralBlurPass(fg, ssao, { 0, config.scale }, cameraInfo.zf,
+            highQualitySampling ? TextureFormat::RGB8 : TextureFormat::R8,
+            config);
 
     fg.getBlackboard().put("ssao", ssao);
     return ssao;
@@ -441,7 +531,7 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::screenSpaceAmbientOclusion(
 
 FrameGraphId<FrameGraphTexture> PostProcessManager::bilateralBlurPass(
         FrameGraph& fg, FrameGraphId<FrameGraphTexture> input, math::int2 axis, float zf,
-        TextureFormat format) noexcept {
+        TextureFormat format, BilateralPassConfig config) noexcept {
 
     Handle<HwRenderPrimitive> fullScreenRenderPrimitive = mEngine.getFullScreenRenderPrimitive();
 
@@ -480,17 +570,36 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::bilateralBlurPass(
                 auto blurred = resources.get(data.rt);
                 auto const& desc = resources.getDescriptor(data.blurred);
 
-                // TODO: "oneOverEdgeDistance" should be a user-settable parameter
-                //       z-distance that constitute an edge for bilateral filtering
-                FMaterialInstance* const mi = mBilateralBlur.getMaterialInstance();
+                // unnormalized gaussian half-kernel of a given standard deviation
+                // returns number of samples stored in array (max 32)
+                auto gaussianKernel =
+                        [](float* outKernel, size_t gaussianWidth, float stdDev) -> uint32_t {
+                    const size_t gaussianSampleCount = std::min(size_t(32), (gaussianWidth + 1u) / 2u);
+                    for (size_t i = 0; i < gaussianSampleCount; i++) {
+                        float x = i;
+                        float g = std::exp(-(x * x) / (2.0f * stdDev * stdDev));
+                        outKernel[i] = g;
+                    }
+                    return uint32_t(gaussianSampleCount);
+                };
+
+                float kGaussianSamples[32];
+                uint32_t kGaussianCount = gaussianKernel(kGaussianSamples,
+                        config.kernelSize, config.standardDeviation);
+
+                auto& material = getPostProcessMaterial("bilateralBlur");
+                FMaterialInstance* const mi = material.getMaterialInstance();
                 mi->setParameter("ssao", ssao, { /* only reads level 0 */ });
                 mi->setParameter("axis", axis / float2{desc.width, desc.height});
-                mi->setParameter("farPlaneOverEdgeDistance", -zf / 0.0625f);
+                mi->setParameter("kernel", kGaussianSamples, kGaussianCount);
+                mi->setParameter("sampleCount", kGaussianCount);
+                mi->setParameter("farPlaneOverEdgeDistance", -zf / config.bilateralThreshold);
+
                 mi->commit(driver);
                 mi->use(driver);
 
-                PipelineState pipeline(mBilateralBlur.getPipelineState());
-                pipeline.rasterState.depthFunc = RasterState::DepthFunc::G;
+                PipelineState pipeline(material.getPipelineState());
+                pipeline.rasterState.depthFunc = RasterState::DepthFunc::L;
 
                 driver.beginRenderPass(blurred.target, blurred.params);
                 driver.draw(pipeline, fullScreenRenderPrimitive);
@@ -594,7 +703,7 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::gaussianBlurPass(FrameGraph&
             [=](FrameGraphPassResources const& resources,
                     auto const& data, DriverApi& driver) {
 
-                PostProcessMaterial const& separableGaussianBlur = mSeparableGaussianBlur;
+                auto const& separableGaussianBlur = getPostProcessMaterial("separableGaussianBlur");
                 FMaterialInstance* const mi = separableGaussianBlur.getMaterialInstance();
 
                 float2 kernel[64];
@@ -623,15 +732,11 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::gaussianBlurPass(FrameGraph&
                         float2{ 1.0f / FTexture::valueForLevel(srcLevel, inDesc.width), 0 });
                 mi->setParameter("count", (int32_t)m);
                 mi->setParameter("kernel", kernel, m);
-                mi->commit(driver);
-                mi->use(driver);
 
                 // The framegraph only computes discard flags at FrameGraphPass boundaries
                 hwTempRT.params.flags.discardEnd = TargetBufferFlags::NONE;
 
-                driver.beginRenderPass(hwTempRT.target, hwTempRT.params);
-                driver.draw(separableGaussianBlur.getPipelineState(), fullScreenRenderPrimitive);
-                driver.endRenderPass();
+                commitAndRender(hwTempRT, separableGaussianBlur, driver);
 
                 // vertical pass
                 auto width = FTexture::valueForLevel(dstLevel, outDesc.width);
@@ -648,6 +753,7 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::gaussianBlurPass(FrameGraph&
                         float4{ width, height, 1.0f / width, 1.0f / height });
                 mi->setParameter("axis", float2{ 0, 1.0f / tempDesc.height });
                 mi->commit(driver);
+                // we don't need to call use() here, since it's the same material
 
                 driver.beginRenderPass(hwOutRT.target, hwOutRT.params);
                 driver.draw(separableGaussianBlur.getPipelineState(), fullScreenRenderPrimitive);
@@ -660,114 +766,432 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::gaussianBlurPass(FrameGraph&
 FrameGraphId<FrameGraphTexture> PostProcessManager::dof(FrameGraph& fg,
         FrameGraphId<FrameGraphTexture> input,
         const View::DepthOfFieldOptions& dofOptions,
+        bool translucent,
         const CameraInfo& cameraInfo) noexcept {
 
     FEngine& engine = mEngine;
     Handle<HwRenderPrimitive> const& fullScreenRenderPrimitive = engine.getFullScreenRenderPrimitive();
 
-    FrameGraphId<FrameGraphTexture> depth = fg.getBlackboard().get<FrameGraphTexture>("structure");
-    assert(depth.isValid());
+    const uint8_t variant = uint8_t(
+            translucent ? PostProcessVariant::TRANSLUCENT : PostProcessVariant::OPAQUE);
+
+    const TextureFormat format = translucent ? TextureFormat::RGBA16F
+                                             : TextureFormat::R11F_G11F_B10F;
 
     // rotate the bokeh based on the aperture diameter (i.e. angle of the blades)
-    float bokehAngle = float(F_PI) / 6.0f;
+    float bokehAngle = f::PI / 6.0f;
     if (dofOptions.maxApertureDiameter > 0.0f) {
-        bokehAngle += float(F_PI_2) * saturate(cameraInfo.A / dofOptions.maxApertureDiameter);
+        bokehAngle += f::PI_2 * saturate(cameraInfo.A / dofOptions.maxApertureDiameter);
     }
 
-    const float SAMPLE_COUNT = 11.0; // (keep in sync with dofUtils.fs)
-    const size_t effectiveSampleCount = 1 + (SAMPLE_COUNT - 1) * 2;
     const float focusDistance = std::max(cameraInfo.zn, dofOptions.focusDistance);
     auto const& desc = fg.getDescriptor<FrameGraphTexture>(input);
     const float Kc = (cameraInfo.A * cameraInfo.f) / (focusDistance - cameraInfo.f);
-    const float Ks = ((float)desc.height / effectiveSampleCount) / FCamera::SENSOR_SIZE;
-    const float2 cocParams{
+    const float Ks = ((float)desc.height) / FCamera::SENSOR_SIZE;
+    float2 cocParams{
             // we use 1/zn instead of (zf - zn) / (zf * zn), because in reality we're using
             // a projection with an infinite far plane
-            (dofOptions.blurScale * Ks * Kc) * focusDistance / cameraInfo.zn,
-            (dofOptions.blurScale * Ks * Kc) * (1.0f - focusDistance / cameraInfo.zn)
+            (dofOptions.cocScale * Ks * Kc) * focusDistance / cameraInfo.zn,
+            (dofOptions.cocScale * Ks * Kc) * (1.0f - focusDistance / cameraInfo.zn)
     };
+    // handle reversed z
+    cocParams = float2{ -cocParams.x, cocParams.x + cocParams.y };
 
-    struct PostProcessDoFBlur {
+    Blackboard& blackboard = fg.getBlackboard();
+    auto depth = blackboard.get<FrameGraphTexture>("depth");
+    assert(depth.isValid());
+
+    // the downsampled target is multiple of 8, so we can have 4 clean mipmap levels
+    constexpr const uint32_t maxMipLevels = 4u;
+    constexpr const uint32_t maxMipLevelsMask = (1u << maxMipLevels) - 1u;
+    auto const& colorDesc = fg.getDescriptor(input);
+    const uint32_t width  = ((colorDesc.width  + maxMipLevelsMask) & ~maxMipLevelsMask) / 2;
+    const uint32_t height = ((colorDesc.height + maxMipLevelsMask) & ~maxMipLevelsMask) / 2;
+    const uint8_t maxLevelCount = FTexture::maxLevelCount(width, height);
+    uint8_t mipmapCount = min(maxLevelCount, uint8_t(maxMipLevels));
+
+    /*
+     * Setup:
+     *      - Downsample of color buffer
+     *      - Separate near & far field
+     *      - Generate Circle Of Confusion buffer
+     */
+
+    struct PostProcessDofDownsample {
         FrameGraphId<FrameGraphTexture> color;
         FrameGraphId<FrameGraphTexture> depth;
-        FrameGraphId<FrameGraphTexture> vertical;
-        FrameGraphId<FrameGraphTexture> diagonal;
+        FrameGraphId<FrameGraphTexture> outForeground;
+        FrameGraphId<FrameGraphTexture> outBackground;
+        FrameGraphId<FrameGraphTexture> outCocFgBg;
         FrameGraphRenderTargetHandle rt;
     };
 
-    auto& ppDoFBlur = fg.addPass<PostProcessDoFBlur>("dofblur",
+    auto& ppDoFDownsample = fg.addPass<PostProcessDofDownsample>("DoF Downsample",
             [&](FrameGraph::Builder& builder, auto& data) {
-                auto const& inputDesc = fg.getDescriptor(input);
                 data.color = builder.sample(input);
                 data.depth = builder.sample(depth);
-                data.vertical = builder.createTexture("dof vertical output", {
-                        .width = inputDesc.width,
-                        .height = inputDesc.height,
-                        .format = inputDesc.format
+
+                data.outForeground = builder.createTexture("dof foreground output", {
+                        .width  = width,
+                        .height = height,
+                        .levels = mipmapCount,
+                        .format = format
                 });
-                data.vertical = builder.write(data.vertical);
-                data.diagonal = builder.createTexture("dof diagonal output", {
-                        .width = inputDesc.width,
-                        .height = inputDesc.height,
-                        .format = inputDesc.format
+                data.outBackground = builder.createTexture("dof background output", {
+                        .width  = width,
+                        .height = height,
+                        .levels = mipmapCount,
+                        .format = format
                 });
-                data.diagonal = builder.write(data.diagonal);
+                data.outCocFgBg = builder.createTexture("dof CoC output", {
+                        .width  = width,
+                        .height = height,
+                        .levels = mipmapCount,
+                        .format = TextureFormat::RG16F
+                });
+                data.outForeground = builder.write(data.outForeground);
+                data.outBackground = builder.write(data.outBackground);
+                data.outCocFgBg    = builder.write(data.outCocFgBg);
                 data.rt = builder.createRenderTarget("DoF Target", {
                         .attachments = {
-                                { data.vertical, data.diagonal }, {}, {}
+                                { data.outForeground, data.outBackground, data.outCocFgBg }, {}, {}
                         }
                 });
             },
             [=](FrameGraphPassResources const& resources,
                     auto const& data, DriverApi& driver) {
-                auto const& desc = resources.getDescriptor(data.color);
-                auto const& color = resources.getTexture(data.color);
-                auto const& depth = resources.getTexture(data.depth);
                 auto const& out = resources.get(data.rt);
-
-                PostProcessMaterial& material = mDoFBlur;
+                auto color = resources.getTexture(data.color);
+                auto depth = resources.getTexture(data.depth);
+                auto const& material = getPostProcessMaterial("dofDownsample");
                 FMaterialInstance* const mi = material.getMaterialInstance();
-                mi->setParameter("color", color, {
-                        .filterMag = SamplerMagFilter::LINEAR,
-                        .filterMin = SamplerMinFilter::LINEAR
-                });
-                mi->setParameter("depth", depth, {
-                        .filterMin = SamplerMinFilter::NEAREST
-                });
-                mi->setParameter("resolution", float4{
-                        desc.width, desc.height, 1.0f / desc.width, 1.0f / desc.height });
-                mi->setParameter("blurDirections", float4{
-                        std::cos(0.0f + bokehAngle), std::sin(0.0f + bokehAngle),
-                        std::cos(F_PI_4 + bokehAngle), std::sin(F_PI_4 + bokehAngle) });
+                mi->setParameter("color", color, { .filterMin = SamplerMinFilter::NEAREST });
+                mi->setParameter("depth", depth, { .filterMin = SamplerMinFilter::NEAREST });
                 mi->setParameter("cocParams", cocParams);
-                mi->commit(driver);
-                mi->use(driver);
-
-                PipelineState pipeline(material.getPipelineState());
-                driver.beginRenderPass(out.target, out.params);
-                driver.draw(pipeline, fullScreenRenderPrimitive);
-                driver.endRenderPass();
+                mi->setParameter("uvscale", float4{ width, height, 1.0f / colorDesc.width, 1.0f / colorDesc.height });
+                commitAndRender(out, material, driver);
             });
 
-    struct PostProcessDoF {
-        FrameGraphId<FrameGraphTexture> vertical;
-        FrameGraphId<FrameGraphTexture> diagonal;
-        FrameGraphId<FrameGraphTexture> depth;
+    /*
+     * Setup (Continued)
+     *      - Generate mipmaps
+     */
+
+    struct PostProcessDofMipmap {
+        FrameGraphId<FrameGraphTexture> inOutForeground;
+        FrameGraphId<FrameGraphTexture> inOutBackground;
+        FrameGraphId<FrameGraphTexture> inOutCocFgBg;
+        FrameGraphRenderTargetHandle rt[3];
+    };
+
+    assert(mipmapCount - 1
+           <= sizeof(PostProcessDofMipmap::rt) / sizeof(FrameGraphRenderTargetHandle));
+
+    auto& ppDoFMipmap = fg.addPass<PostProcessDofMipmap>("DoF Mipmap",
+            [&](FrameGraph::Builder& builder, auto& data) {
+                data.inOutForeground = builder.sample(ppDoFDownsample.getData().outForeground);
+                data.inOutBackground = builder.sample(ppDoFDownsample.getData().outBackground);
+                data.inOutCocFgBg    = builder.sample(ppDoFDownsample.getData().outCocFgBg);
+                data.inOutForeground = builder.write(data.inOutForeground);
+                data.inOutBackground = builder.write(data.inOutBackground);
+                data.inOutCocFgBg    = builder.write(data.inOutCocFgBg);
+                for (size_t i = 0; i < mipmapCount - 1u; i++) {
+                    // make sure inputs are always multiple of two (should be true by construction)
+                    // (this is so that we can compute clean mip levels)
+                    assert((FTexture::valueForLevel(uint8_t(i), fg.getDescriptor(data.inOutForeground).width ) & 0x1u) == 0);
+                    assert((FTexture::valueForLevel(uint8_t(i), fg.getDescriptor(data.inOutForeground).height) & 0x1u) == 0);
+                    using Attachment = FrameGraphRenderTarget::Attachments::AttachmentInfo;
+                    data.rt[i] = builder.createRenderTarget("DoF Target", {
+                            .attachments = {
+                                    {
+                                        Attachment{ data.inOutForeground, uint8_t(i + 1) },
+                                        Attachment{ data.inOutBackground, uint8_t(i + 1) },
+                                        Attachment{ data.inOutCocFgBg,    uint8_t(i + 1) }
+                                    },
+                                    {},
+                                    {}
+                            }
+                    });
+                }
+            },
+            [=](FrameGraphPassResources const& resources,
+                    auto const& data, DriverApi& driver) {
+
+                auto inOutForeground = resources.getTexture(data.inOutForeground);
+                auto inOutBackground = resources.getTexture(data.inOutBackground);
+                auto inOutCocFgBg    = resources.getTexture(data.inOutCocFgBg);
+
+                auto const& material = getPostProcessMaterial("dofMipmap");
+                FMaterialInstance* const mi = material.getMaterialInstance();
+                mi->setParameter("foreground", inOutForeground, { .filterMin = SamplerMinFilter::NEAREST_MIPMAP_NEAREST });
+                mi->setParameter("background", inOutBackground, { .filterMin = SamplerMinFilter::NEAREST_MIPMAP_NEAREST });
+                mi->setParameter("cocFgBg",    inOutCocFgBg,    { .filterMin = SamplerMinFilter::NEAREST_MIPMAP_NEAREST });
+                mi->use(driver);
+
+                const PipelineState pipeline(material.getPipelineState(variant));
+
+                for (size_t level = 0 ; level < mipmapCount - 1u ; level++) {
+                    auto const& out = resources.get(data.rt[level]);
+                    mi->setParameter("mip", uint32_t(level));
+                    mi->setParameter("weightScale", 0.5f / float(1u<<level));
+                    mi->commit(driver);
+                    driver.beginRenderPass(out.target, out.params);
+                    driver.draw(pipeline, fullScreenRenderPrimitive);
+                    driver.endRenderPass();
+                }
+            });
+
+    /*
+     * Setup (Continued)
+     *      - Generate min/max tiles for far/near fields (continued)
+     */
+
+    auto inTilesCocMaxMin = ppDoFDownsample.getData().outCocFgBg;
+
+    // Match this with TILE_SIZE in dofDilate.mat
+    const size_t tileSize = 16; // size of the tile in full resolution pixel
+    const uint32_t tileBufferWidth  = ((colorDesc.width  + (tileSize - 1u)) & ~(tileSize - 1u)) / 4u;
+    const uint32_t tileBufferHeight = ((colorDesc.height + (tileSize - 1u)) & ~(tileSize - 1u)) / 4u;
+    const size_t tileReductionCount = std::log2(tileSize) - 1.0; // -1 because we start from half-resolution
+
+    struct PostProcessDofTiling1 {
+        FrameGraphId<FrameGraphTexture> inCocMaxMin;
+        FrameGraphId<FrameGraphTexture> outTilesCocMaxMin;
+        FrameGraphRenderTargetHandle rt;
+    };
+
+    for (size_t i = 0; i < tileReductionCount; i++) {
+        auto& ppDoFTiling = fg.addPass<PostProcessDofTiling1>("DoF Tiling",
+                [&](FrameGraph::Builder& builder, auto& data) {
+                    assert((tileBufferWidth  & 1u) == 0);
+                    assert((tileBufferHeight & 1u) == 0);
+                    data.inCocMaxMin = builder.sample(inTilesCocMaxMin);
+                    data.outTilesCocMaxMin = builder.createTexture("dof tiles output", {
+                            .width  = tileBufferWidth  >> i,
+                            .height = tileBufferHeight >> i,
+                            .format = TextureFormat::RG16F
+                    });
+                    data.outTilesCocMaxMin = builder.write(data.outTilesCocMaxMin);
+                    data.rt = builder.createRenderTarget("DoF Tiles Target", {
+                            .attachments = { data.outTilesCocMaxMin }
+                    });
+                },
+                [=](FrameGraphPassResources const& resources,
+                        auto const& data, DriverApi& driver) {
+                    auto const& inputDesc = resources.getDescriptor(data.inCocMaxMin);
+                    auto const& outputDesc = resources.getDescriptor(data.outTilesCocMaxMin);
+                    auto const& out = resources.get(data.rt);
+                    auto inCocMaxMin = resources.getTexture(data.inCocMaxMin);
+                    auto const& material = getPostProcessMaterial("dofTiles");
+                    FMaterialInstance* const mi = material.getMaterialInstance();
+                    mi->setParameter("cocMaxMin", inCocMaxMin, { .filterMin = SamplerMinFilter::NEAREST });
+                    mi->setParameter("uvscale", float4{
+                        outputDesc.width, outputDesc.height,
+                        1.0f / inputDesc.width, 1.0f / inputDesc.height });
+                    commitAndRender(out, material, driver);
+                });
+        inTilesCocMaxMin = ppDoFTiling.getData().outTilesCocMaxMin;
+    }
+
+    /*
+     * Dilate tiles
+     */
+
+    // This is a small helper that does one round of dilate
+    auto dilate = [&](FrameGraphId<FrameGraphTexture> input) -> FrameGraphId<FrameGraphTexture> {
+
+        struct PostProcessDofDilate {
+            FrameGraphId<FrameGraphTexture> inTilesCocMaxMin;
+            FrameGraphId<FrameGraphTexture> outTilesCocMaxMin;
+            FrameGraphRenderTargetHandle rt;
+        };
+
+        auto& ppDoFDilate = fg.addPass<PostProcessDofDilate>("DoF Dilate",
+                [&](FrameGraph::Builder& builder, auto& data) {
+                    auto const& inputDesc = fg.getDescriptor(input);
+                    data.inTilesCocMaxMin = builder.sample(input);
+                    data.outTilesCocMaxMin = builder.createTexture("dof dilated tiles output", inputDesc);
+                    data.outTilesCocMaxMin = builder.write(data.outTilesCocMaxMin);
+                    data.rt = builder.createRenderTarget("DoF Dilated Tiles Target", {
+                            .attachments = { data.outTilesCocMaxMin }
+                    });
+                },
+                [=](FrameGraphPassResources const& resources,
+                        auto const& data, DriverApi& driver) {
+                    auto const& out = resources.get(data.rt);
+                    auto inTilesCocMaxMin = resources.getTexture(data.inTilesCocMaxMin);
+                    auto const& material = getPostProcessMaterial("dofDilate");
+                    FMaterialInstance* const mi = material.getMaterialInstance();
+                    mi->setParameter("tiles", inTilesCocMaxMin, { .filterMin = SamplerMinFilter::NEAREST });
+                    commitAndRender(out, material, driver);
+                });
+        return ppDoFDilate.getData().outTilesCocMaxMin;
+    };
+
+    // Tiles of 16 pixels requires two dilate rounds to accommodate our max Coc of 32 pixels
+    auto dilated = dilate(inTilesCocMaxMin);
+    dilated = dilate(dilated);
+
+    /*
+     * DoF blur pass
+     */
+
+    struct PostProcessDof {
+        FrameGraphId<FrameGraphTexture> foreground;
+        FrameGraphId<FrameGraphTexture> background;
+        FrameGraphId<FrameGraphTexture> cocFgBg;
+        FrameGraphId<FrameGraphTexture> tilesCocMaxMin;
+        FrameGraphId<FrameGraphTexture> outForeground;
+        FrameGraphId<FrameGraphTexture> outAlpha;
+        FrameGraphRenderTargetHandle rt;
+    };
+
+    auto& ppDoF = fg.addPass<PostProcessDof>("DoF",
+            [&](FrameGraph::Builder& builder, auto& data) {
+
+                data.foreground     = builder.sample(ppDoFMipmap.getData().inOutForeground);
+                data.background     = builder.sample(ppDoFMipmap.getData().inOutBackground);
+                data.cocFgBg        = builder.sample(ppDoFMipmap.getData().inOutCocFgBg);
+                data.tilesCocMaxMin = builder.sample(dilated);
+
+                // The DoF buffer (output) doesn't need to be a multiple of 8 because it's not
+                // mipmapped. We just need to adjust the uv properly.
+                data.outForeground = builder.createTexture("dof color output", {
+                        .width  = (colorDesc.width  + 1) / 2,
+                        .height = (colorDesc.height + 1) / 2,
+                        .format = fg.getDescriptor(data.foreground).format
+                });
+                data.outAlpha = builder.createTexture("dof alpha output", {
+                        .width  = (colorDesc.width  + 1) / 2,
+                        .height = (colorDesc.height + 1) / 2,
+                        .format = TextureFormat::R8
+                });
+                data.outForeground  = builder.write(data.outForeground);
+                data.outAlpha       = builder.write(data.outAlpha);
+                data.rt = builder.createRenderTarget("DoF Target", {
+                        .attachments = { { data.outForeground,
+                                           data.outAlpha, {}, {} }, {}, {} }
+                });
+            },
+            [=](FrameGraphPassResources const& resources,
+                    auto const& data, DriverApi& driver) {
+                auto const& out = resources.get(data.rt);
+
+                auto foreground     = resources.getTexture(data.foreground);
+                auto background     = resources.getTexture(data.background);
+                auto cocFgBg        = resources.getTexture(data.cocFgBg);
+                auto tilesCocMaxMin = resources.getTexture(data.tilesCocMaxMin);
+
+                auto const& inputDesc = resources.getDescriptor(data.cocFgBg);
+                auto const& outputDesc = resources.getDescriptor(data.outForeground);
+                auto const& tilesDesc = resources.getDescriptor(data.tilesCocMaxMin);
+
+                auto const& material = getPostProcessMaterial("dof");
+                FMaterialInstance* const mi = material.getMaterialInstance();
+                // it's not safe to use bilinear filtering in the general case (causes artifacts around edges)
+                mi->setParameter("foreground", foreground,
+                        { .filterMin = SamplerMinFilter::NEAREST_MIPMAP_NEAREST });
+                mi->setParameter("foregroundLinear", foreground,
+                        { .filterMin = SamplerMinFilter::LINEAR_MIPMAP_NEAREST });
+                mi->setParameter("background", background,
+                        { .filterMin = SamplerMinFilter::NEAREST_MIPMAP_NEAREST });
+                mi->setParameter("cocFgBg", cocFgBg,
+                        { .filterMin = SamplerMinFilter::NEAREST_MIPMAP_NEAREST });
+                mi->setParameter("tiles", tilesCocMaxMin,
+                        { .filterMin = SamplerMinFilter::NEAREST });
+                mi->setParameter("cocToTexelOffset", 0.5f / float2{ inputDesc.width, inputDesc.height });
+                mi->setParameter("uvscale", float4{
+                    outputDesc.width  / float(inputDesc.width),
+                    outputDesc.height / float(inputDesc.height),
+                    outputDesc.width  / (tileSize * 0.5f * tilesDesc.width),
+                    outputDesc.height / (tileSize * 0.5f * tilesDesc.height)
+                });
+                mi->setParameter("bokehAngle",  bokehAngle);
+                commitAndRender(out, material, driver);
+            });
+
+    /*
+     * DoF median
+     */
+
+
+    struct PostProcessDofMedian {
+        FrameGraphId<FrameGraphTexture> inForeground;
+        FrameGraphId<FrameGraphTexture> inAlpha;
+        FrameGraphId<FrameGraphTexture> tilesCocMaxMin;
+        FrameGraphId<FrameGraphTexture> outForeground;
+        FrameGraphId<FrameGraphTexture> outAlpha;
+        FrameGraphRenderTargetHandle rt;
+    };
+
+    auto& ppDoFMedian = fg.addPass<PostProcessDofMedian>("DoF Median",
+            [&](FrameGraph::Builder& builder, auto& data) {
+
+                data.inForeground   = builder.sample(ppDoF.getData().outForeground);
+                data.inAlpha        = builder.sample(ppDoF.getData().outAlpha);
+                data.tilesCocMaxMin = builder.sample(dilated);
+
+                data.outForeground  = builder.createTexture("dof color output", fg.getDescriptor(data.inForeground));
+                data.outAlpha       = builder.createTexture("dof alpha output", fg.getDescriptor(data.inAlpha));
+                data.outForeground  = builder.write(data.outForeground);
+                data.outAlpha       = builder.write(data.outAlpha);
+                data.rt = builder.createRenderTarget("DoF Target", {
+                        .attachments = { { data.outForeground,
+                                                 data.outAlpha, {}, {} }, {}, {} }
+                });
+            },
+            [=](FrameGraphPassResources const& resources,
+                    auto const& data, DriverApi& driver) {
+                auto const& out = resources.get(data.rt);
+
+                auto inForeground   = resources.getTexture(data.inForeground);
+                auto inAlpha        = resources.getTexture(data.inAlpha);
+                auto tilesCocMaxMin = resources.getTexture(data.tilesCocMaxMin);
+
+                auto const& outputDesc = resources.getDescriptor(data.outForeground);
+                auto const& tilesDesc = resources.getDescriptor(data.tilesCocMaxMin);
+
+                auto const& material = getPostProcessMaterial("dofMedian");
+                FMaterialInstance* const mi = material.getMaterialInstance();
+                mi->setParameter("dof",   inForeground,   { .filterMin = SamplerMinFilter::NEAREST_MIPMAP_NEAREST });
+                mi->setParameter("alpha", inAlpha,        { .filterMin = SamplerMinFilter::NEAREST_MIPMAP_NEAREST });
+                mi->setParameter("tiles", tilesCocMaxMin, { .filterMin = SamplerMinFilter::NEAREST });
+                mi->setParameter("uvscale", float2{
+                        outputDesc.width  / (tileSize * 0.5f * tilesDesc.width),
+                        outputDesc.height / (tileSize * 0.5f * tilesDesc.height)
+                });
+                commitAndRender(out, material, driver);
+            });
+
+
+    /*
+     * DoF recombine
+     */
+
+    auto outForeground = ppDoFMedian.getData().outForeground;
+    auto outAlpha = ppDoFMedian.getData().outAlpha;
+    if (false) { // TODO: make this a quality setting
+        outForeground = ppDoF.getData().outForeground;
+        outAlpha = ppDoF.getData().outAlpha;
+    }
+
+    struct PostProcessDofCombine {
+        FrameGraphId<FrameGraphTexture> color;
+        FrameGraphId<FrameGraphTexture> dof;
+        FrameGraphId<FrameGraphTexture> alpha;
+        FrameGraphId<FrameGraphTexture> tilesCocMaxMin;
         FrameGraphId<FrameGraphTexture> output;
         FrameGraphRenderTargetHandle rt;
     };
 
-    auto& ppDoF = fg.addPass<PostProcessDoF>("dof",
+    auto& ppDoFCombine = fg.addPass<PostProcessDofCombine>("DoF combine",
             [&](FrameGraph::Builder& builder, auto& data) {
-                auto const& inputDesc = fg.getDescriptor(input);
-                data.vertical = builder.sample(ppDoFBlur.getData().vertical);
-                data.diagonal = builder.sample(ppDoFBlur.getData().diagonal);
-                data.depth = builder.sample(depth);
-                data.output = builder.createTexture("dof output", {
-                        .width = inputDesc.width,
-                        .height = inputDesc.height,
-                        .format = inputDesc.format
-                });
+                data.color      = builder.sample(input);
+                data.dof        = builder.sample(outForeground);
+                data.alpha      = builder.sample(outAlpha);
+                data.tilesCocMaxMin = builder.sample(dilated);
+                auto const& inputDesc = fg.getDescriptor(data.color);
+                data.output = builder.createTexture("dof output", inputDesc);
                 data.output = builder.write(data.output);
                 data.rt = builder.createRenderTarget("DoF Target", {
                         .attachments = { data.output }
@@ -775,41 +1199,31 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::dof(FrameGraph& fg,
             },
             [=](FrameGraphPassResources const& resources,
                     auto const& data, DriverApi& driver) {
-                auto const& desc = resources.getDescriptor(data.vertical);
-                auto const& vertical = resources.getTexture(data.vertical);
-                auto const& diagonal = resources.getTexture(data.diagonal);
-                auto const& depth = resources.getTexture(data.depth);
+                auto const& dofDesc = resources.getDescriptor(data.dof);
+                auto const& tilesDesc = resources.getDescriptor(data.tilesCocMaxMin);
                 auto const& out = resources.get(data.rt);
 
-                PostProcessMaterial& material = mDoF;
-                FMaterialInstance* const mi = material.getMaterialInstance();
-                mi->setParameter("buffer0", vertical, {
-                        .filterMag = SamplerMagFilter::LINEAR,
-                        .filterMin = SamplerMinFilter::LINEAR
-                });
-                mi->setParameter("buffer1", diagonal, {
-                        .filterMag = SamplerMagFilter::LINEAR,
-                        .filterMin = SamplerMinFilter::LINEAR
-                });
-                mi->setParameter("depth", depth, {
-                        .filterMin = SamplerMinFilter::NEAREST
-                });
-                mi->setParameter("resolution", float4{
-                        desc.width, desc.height, 1.0f / desc.width, 1.0f / desc.height });
-                mi->setParameter("blurDirections", float4{
-                        std::cos(F_PI_2 + bokehAngle), std::sin(F_PI_2 + bokehAngle),
-                        std::cos(3.0f * F_PI_4 + bokehAngle), std::sin(3.0f * F_PI_4 + bokehAngle) });
-                mi->setParameter("cocParams", cocParams);
-                mi->commit(driver);
-                mi->use(driver);
+                auto color      = resources.getTexture(data.color);
+                auto dof        = resources.getTexture(data.dof);
+                auto alpha      = resources.getTexture(data.alpha);
+                auto tilesCocMaxMin = resources.getTexture(data.tilesCocMaxMin);
 
-                PipelineState pipeline(material.getPipelineState());
-                driver.beginRenderPass(out.target, out.params);
-                driver.draw(pipeline, fullScreenRenderPrimitive);
-                driver.endRenderPass();
+                auto const& material = getPostProcessMaterial("dofCombine");
+                FMaterialInstance* const mi = material.getMaterialInstance();
+                mi->setParameter("color", color, { .filterMin = SamplerMinFilter::NEAREST });
+                mi->setParameter("dof",   dof,   { .filterMag = SamplerMagFilter::NEAREST });
+                mi->setParameter("alpha", alpha, { .filterMag = SamplerMagFilter::NEAREST });
+                mi->setParameter("tiles", tilesCocMaxMin, { .filterMin = SamplerMinFilter::NEAREST });
+                mi->setParameter("uvscale", float4{
+                    colorDesc.width  / (dofDesc.width    *  2.0f),
+                    colorDesc.height / (dofDesc.height   *  2.0f),
+                    colorDesc.width  / (tilesDesc.width  * float(tileSize)),
+                    colorDesc.height / (tilesDesc.height * float(tileSize))
+                });
+                commitAndRender(out, material, driver);
             });
 
-    return ppDoF.getData().output;
+    return ppDoFCombine.getData().output;
 }
 
 FrameGraphId<FrameGraphTexture> PostProcessManager::bloomPass(FrameGraph& fg,
@@ -876,10 +1290,10 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::bloomPass(FrameGraph& fg,
             [=](FrameGraphPassResources const& resources,
                     auto const& data, DriverApi& driver) {
 
-                PostProcessMaterial const& bloomDownsample = mBloomDownsample;
-                FMaterialInstance* mi = bloomDownsample.getMaterialInstance();
+                auto const& material = getPostProcessMaterial("bloomDownsample");
+                FMaterialInstance* mi = material.getMaterialInstance();
 
-                const PipelineState pipeline(bloomDownsample.getPipelineState());
+                const PipelineState pipeline(material.getPipelineState());
 
                 auto hwIn = resources.getTexture(data.in);
                 auto hwOut = resources.getTexture(data.out);
@@ -892,6 +1306,7 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::bloomPass(FrameGraph& fg,
                 });
                 mi->setParameter("level", 0.0f);
                 mi->setParameter("threshold", bloomOptions.threshold ? 1.0f : 0.0f);
+                mi->setParameter("invHighlight", std::isinf(bloomOptions.highlight) ? 0.0f : 1.0f / bloomOptions.highlight);
 
                 for (size_t i = 0; i < bloomOptions.levels; i++) {
                     auto hwOutRT = resources.get(data.outRT[i]);
@@ -935,9 +1350,9 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::bloomPass(FrameGraph& fg,
                 auto hwIn = resources.getTexture(data.in);
                 auto const& outDesc = resources.getDescriptor(data.out);
 
-                PostProcessMaterial const& bloomUpsample = mBloomUpsample;
-                FMaterialInstance* mi = bloomUpsample.getMaterialInstance();
-                PipelineState pipeline(bloomUpsample.getPipelineState());
+                auto const& material = getPostProcessMaterial("bloomUpsample");
+                FMaterialInstance* mi = material.getMaterialInstance();
+                PipelineState pipeline(material.getPipelineState());
                 pipeline.rasterState.blendFunctionSrcRGB = BlendFunction::ONE;
                 pipeline.rasterState.blendFunctionDstRGB = BlendFunction::ONE;
 
@@ -967,34 +1382,74 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::bloomPass(FrameGraph& fg,
     return bloomUpsamplePass.getData().out;
 }
 
-void PostProcessManager::colorGradingSubpass(DriverApi& driver, const FColorGrading* colorGrading,
-        bool translucent, bool fxaa, bool dithering) noexcept {
+static float4 getVignetteParameters(View::VignetteOptions options, uint32_t width, uint32_t height) {
+    if (options.enabled) {
+        // Vignette params
+        // From 0.0 to 0.5 the vignette is a rounded rect that turns into an oval
+        // From 0.5 to 1.0 the vignette turns from oval to circle
+        float oval = min(options.roundness, 0.5f) * 2.0f;
+        float circle = (max(options.roundness, 0.5f) - 0.5f) * 2.0f;
+        float roundness = (1.0f - oval) * 6.0f + oval;
 
-    FEngine& engine = mEngine;
-    Handle<HwRenderPrimitive> const& fullScreenRenderPrimitive = engine.getFullScreenRenderPrimitive();
+        // Mid point varies during the oval/rounded section of roundness
+        // We also modify it to emphasize feathering
+        float midPoint = (1.0f - options.midPoint) * mix(2.2f, 3.0f, oval)
+                         * (1.0f - 0.1f * options.feather);
 
-    FMaterialInstance* mi = mColorGradingAsSubpass.getMaterialInstance();
+        // Radius of the rounded corners as a param to pow()
+        float radius = roundness *
+                mix(1.0f + 4.0f * (1.0f - options.feather), 1.0f, std::sqrtf(oval));
+
+        // Factor to transform oval into circle
+        float aspect = mix(1.0f, float(width) / float(height), circle);
+
+        return float4{ midPoint, radius, aspect, options.feather };
+    }
+
+    // Set half-max to show disabled
+    return float4{ std::numeric_limits<half>::max() };
+}
+
+void PostProcessManager::colorGradingPrepareSubpass(DriverApi& driver,
+        const FColorGrading* colorGrading, View::VignetteOptions vignetteOptions, bool fxaa,
+        bool dithering, uint32_t width, uint32_t height) noexcept {
+
+    float4 vignetteParameters = getVignetteParameters(vignetteOptions, width, height);
+
+    auto const& material = getPostProcessMaterial("colorGradingAsSubpass");
+    FMaterialInstance* mi = material.getMaterialInstance();
     mi->setParameter("lut", colorGrading->getHwHandle(), {
             .filterMag = SamplerMagFilter::LINEAR,
             .filterMin = SamplerMinFilter::LINEAR
     });
+
+    const float temporalNoise = mUniformDistribution(mEngine.getRandomEngine());
+
+    mi->setParameter("vignette", vignetteParameters);
+    mi->setParameter("vignetteColor", vignetteOptions.color);
     mi->setParameter("dithering", dithering);
     mi->setParameter("fxaa", fxaa);
+    mi->setParameter("temporalNoise", temporalNoise);
     mi->commit(driver);
-    mi->use(driver);
+}
+
+void PostProcessManager::colorGradingSubpass(DriverApi& driver,  bool translucent) noexcept {
+    FEngine& engine = mEngine;
+    Handle<HwRenderPrimitive> const& fullScreenRenderPrimitive = engine.getFullScreenRenderPrimitive();
+
+    auto const& material = getPostProcessMaterial("colorGradingAsSubpass");
+    material.getMaterialInstance()->use(driver);
     const uint8_t variant = uint8_t(translucent ?
             PostProcessVariant::TRANSLUCENT : PostProcessVariant::OPAQUE);
 
-    driver.draw(mColorGradingAsSubpass.getPipelineState(variant), fullScreenRenderPrimitive);
+    driver.nextSubpass();
+    driver.draw(material.getPipelineState(variant), fullScreenRenderPrimitive);
 }
 
 FrameGraphId<FrameGraphTexture> PostProcessManager::colorGrading(FrameGraph& fg,
         FrameGraphId<FrameGraphTexture> input, const FColorGrading* colorGrading,
         TextureFormat outFormat, bool translucent, bool fxaa, float2 scale,
-        View::BloomOptions bloomOptions, bool dithering) noexcept {
-
-    FEngine& engine = mEngine;
-    Handle<HwRenderPrimitive> const& fullScreenRenderPrimitive = engine.getFullScreenRenderPrimitive();
+        View::BloomOptions bloomOptions, View::VignetteOptions vignetteOptions, bool dithering) noexcept {
 
     struct PostProcessColorGrading {
         FrameGraphId<FrameGraphTexture> input;
@@ -1042,9 +1497,7 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::colorGrading(FrameGraph& fg,
                     data.dirt = builder.sample(bloomDirt);
                 }
             },
-            [=](FrameGraphPassResources const& resources,
-                    auto const& data, DriverApi& driver) {
-
+            [=](FrameGraphPassResources const& resources, auto const& data, DriverApi& driver) {
                 Handle<HwTexture> colorTexture = resources.getTexture(data.input);
 
                 Handle<HwTexture> bloomTexture =
@@ -1053,7 +1506,10 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::colorGrading(FrameGraph& fg,
                 Handle<HwTexture> dirtTexture =
                         data.dirt.isValid() ? resources.getTexture(data.dirt) : getOneTexture();
 
-                FMaterialInstance* mi = mColorGrading.getMaterialInstance();
+                auto const& out = resources.get(data.rt);
+
+                auto const& material = getPostProcessMaterial("colorGrading");
+                FMaterialInstance* mi = material.getMaterialInstance();
                 mi->setParameter("lut", colorGrading->getHwHandle(), {
                         .filterMag = SamplerMagFilter::LINEAR,
                         .filterMin = SamplerMinFilter::LINEAR
@@ -1068,29 +1524,34 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::colorGrading(FrameGraph& fg,
                         .filterMin = SamplerMinFilter::LINEAR
                 });
 
-                float4 bloomParameter{
+                // Bloom params
+                float4 bloomParameters{
                     bloom / float(bloomOptions.levels),
                     1.0f,
                     (bloomOptions.enabled && bloomOptions.dirt) ? bloomOptions.dirtStrength : 0.0f,
                     0.0f
                 };
                 if (bloomOptions.blendMode == View::BloomOptions::BlendMode::INTERPOLATE) {
-                    bloomParameter.y = 1.0f - bloomParameter.x;
+                    bloomParameters.y = 1.0f - bloomParameters.x;
                 }
 
+                auto const& output = resources.getDescriptor(data.output);
+                float4 vignetteParameters = getVignetteParameters(
+                        vignetteOptions, output.width, output.height);
+
+                const float temporalNoise = mUniformDistribution(mEngine.getRandomEngine());
+
                 mi->setParameter("dithering", dithering);
-                mi->setParameter("bloom", bloomParameter);
+                mi->setParameter("bloom", bloomParameters);
+                mi->setParameter("vignette", vignetteParameters);
+                mi->setParameter("vignetteColor", vignetteOptions.color);
                 mi->setParameter("fxaa", fxaa);
-                mi->commit(driver);
-                mi->use(driver);
+                mi->setParameter("temporalNoise", temporalNoise);
 
                 const uint8_t variant = uint8_t(translucent ?
                             PostProcessVariant::TRANSLUCENT : PostProcessVariant::OPAQUE);
 
-                auto const& target = resources.get(data.rt);
-                driver.beginRenderPass(target.target, target.params);
-                driver.draw(mColorGrading.getPipelineState(variant), fullScreenRenderPrimitive);
-                driver.endRenderPass();
+                commitAndRender(out, material, variant, driver);
             }
     );
 
@@ -1100,9 +1561,6 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::colorGrading(FrameGraph& fg,
 FrameGraphId<FrameGraphTexture> PostProcessManager::fxaa(FrameGraph& fg,
         FrameGraphId<FrameGraphTexture> input,
         TextureFormat outFormat, bool translucent) noexcept {
-
-    FEngine& engine = mEngine;
-    Handle<HwRenderPrimitive> const& fullScreenRenderPrimitive = engine.getFullScreenRenderPrimitive();
 
     struct PostProcessFXAA {
         FrameGraphId<FrameGraphTexture> input;
@@ -1126,30 +1584,169 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::fxaa(FrameGraph& fg,
             [=](FrameGraphPassResources const& resources,
                 auto const& data, DriverApi& driver) {
                 auto const& texture = resources.getTexture(data.input);
+                auto const& out = resources.get(data.rt);
 
-                FMaterialInstance* mi = mFxaa.getMaterialInstance();
+                auto const& material = getPostProcessMaterial("fxaa");
+                FMaterialInstance* mi = material.getMaterialInstance();
                 mi->setParameter("colorBuffer", texture, {
                         .filterMag = SamplerMagFilter::LINEAR,
                         .filterMin = SamplerMinFilter::LINEAR
                 });
 
-                mi->commit(driver);
-                mi->use(driver);
-
                 const uint8_t variant = uint8_t(translucent ?
                     PostProcessVariant::TRANSLUCENT : PostProcessVariant::OPAQUE);
 
-                auto const& target = resources.get(data.rt);
-                driver.beginRenderPass(target.target, target.params);
-                driver.draw(mFxaa.getPipelineState(variant), fullScreenRenderPrimitive);
-                driver.endRenderPass();
+                commitAndRender(out, material, variant, driver);
             });
 
     return ppFXAA.getData().output;
 }
 
+void PostProcessManager::prepareTaa(FrameHistory& frameHistory,
+        CameraInfo const& cameraInfo,
+        View::TemporalAntiAliasingOptions const& taaOptions) const noexcept {
+    auto const& previous = frameHistory[0];
+    auto& current = frameHistory.getCurrent();
+    // get sample position within a pixel [-0.5, 0.5]
+    const float2 jitter = halton(previous.frameId) - 0.5f;
+    // compute the world-space to clip-space matrix for this frame
+    current.projection = cameraInfo.projection * (cameraInfo.view * cameraInfo.worldOrigin);
+    // save this frame's sample position
+    current.jitter = jitter;
+    // update frame id
+    current.frameId = previous.frameId + 1;
+}
+
+FrameGraphId<FrameGraphTexture> PostProcessManager::taa(FrameGraph& fg,
+        FrameGraphId<FrameGraphTexture> input, FrameHistory& frameHistory,
+        View::TemporalAntiAliasingOptions taaOptions,
+        ColorGradingConfig colorGradingConfig) noexcept {
+
+    FrameHistoryEntry const& entry = frameHistory[0];
+    FrameGraphId<FrameGraphTexture> colorHistory;
+    mat4f const* historyProjection = nullptr;
+    if (UTILS_UNLIKELY(!entry.color.texture)) {
+        // if we don't have a history yet, just use the current color buffer as history
+        colorHistory = input;
+        historyProjection = &frameHistory.getCurrent().projection;
+    } else {
+        colorHistory = fg.import("TAA history", entry.colorDesc, entry.color);
+        historyProjection = &entry.projection;
+    }
+
+    Blackboard& blackboard = fg.getBlackboard();
+    auto depth = blackboard.get<FrameGraphTexture>("depth");
+    assert(depth.isValid());
+
+    struct TAAData {
+        FrameGraphId<FrameGraphTexture> color;
+        FrameGraphId<FrameGraphTexture> depth;
+        FrameGraphId<FrameGraphTexture> history;
+        FrameGraphId<FrameGraphTexture> output;
+        FrameGraphId<FrameGraphTexture> tonemappedOutput;
+        FrameGraphRenderTargetHandle rt;
+    };
+    auto& taa = fg.addPass<TAAData>("TAA",
+            [&](FrameGraph::Builder& builder, auto& data) {
+                auto desc = fg.getDescriptor(input);
+                data.color = builder.sample(input);
+                data.depth = builder.sample(depth);
+                data.history = builder.sample(colorHistory);
+                data.output = builder.createTexture("TAA output", desc);
+                data.output = builder.write(data.output);
+                if (colorGradingConfig.asSubpass) {
+                    data.tonemappedOutput = builder.createTexture("Tonemapped Buffer", {
+                            .width = desc.width,
+                            .height = desc.height,
+                            .format = colorGradingConfig.ldrFormat
+                    });
+                    data.tonemappedOutput = builder.write(data.tonemappedOutput);
+                    data.output = builder.read(data.output);
+                }
+                data.rt = builder.createRenderTarget("TAA target", {
+                        .attachments = {{ data.output, data.tonemappedOutput, {}, {}}, {}, {}}
+                });
+            },
+            [=, &frameHistory](FrameGraphPassResources const& resources, auto const& data, DriverApi& driver) {
+
+                constexpr mat4f normalizedToClip = {
+                        float4{  2,  0,  0, 0 },
+                        float4{  0,  2,  0, 0 },
+                        float4{  0,  0,  -2, 0 },
+                        float4{ -1, -1, 1, 1 },
+                };
+
+                constexpr float2 sampleOffsets[9] = {
+                        { -1.0f, -1.0f }, {  0.0f, -1.0f }, {  1.0f, -1.0f },
+                        { -1.0f,  0.0f }, {  0.0f,  0.0f }, {  1.0f,  0.0f },
+                        { -1.0f,  1.0f }, {  0.0f,  1.0f }, {  1.0f,  1.0f },
+                };
+
+                FrameHistoryEntry& current = frameHistory.getCurrent();
+
+                float sum = 0.0;
+                float weights[9];
+
+                // this doesn't get vectorized (probably because of exp()), so don't bother
+                // unrolling it.
+                #pragma nounroll
+                for (size_t i = 0; i < 9; i++) {
+                    float2 d = sampleOffsets[i] - current.jitter;
+                    d *= 1.0f / taaOptions.filterWidth;
+                    // this is a gaussian fit of a 3.3 Blackman Harris window
+                    // see: "High Quality Temporal Supersampling" by Bruan Karis
+                    weights[i] = std::exp2(-3.3f * (d.x * d.x + d.y * d.y));
+                    sum += weights[i];
+                }
+                for (auto& w : weights) {
+                    w /= sum;
+                }
+
+                auto out = resources.get(data.rt);
+                auto color = resources.getTexture(data.color);
+                auto depth = resources.getTexture(data.depth);
+                auto history = resources.getTexture(data.history);
+
+                auto const& material = getPostProcessMaterial("taa");
+                FMaterialInstance* mi = material.getMaterialInstance();
+                mi->setParameter("color",  color, {});  // nearest
+                mi->setParameter("depth",  depth, {});  // nearest
+                mi->setParameter("alpha", taaOptions.feedback);
+                mi->setParameter("history", history, {
+                        .filterMag = SamplerMagFilter::LINEAR,
+                        .filterMin = SamplerMinFilter::LINEAR
+                });
+                mi->setParameter("filterWeights",  weights, 9);
+                mi->setParameter("reprojection",
+                        *historyProjection *
+                        inverse(current.projection) *
+                        normalizedToClip);
+
+                mi->commit(driver);
+                mi->use(driver);
+
+                const uint8_t variant = uint8_t(colorGradingConfig.translucent ?
+                        PostProcessVariant::TRANSLUCENT : PostProcessVariant::OPAQUE);
+
+                if (colorGradingConfig.asSubpass) {
+                    out.params.subpassMask = 1;
+                }
+                driver.beginRenderPass(out.target, out.params);
+                driver.draw(material.getPipelineState(variant), mEngine.getFullScreenRenderPrimitive());
+                if (colorGradingConfig.asSubpass) {
+                    colorGradingSubpass(driver, colorGradingConfig.translucent);
+                }
+                driver.endRenderPass();
+
+                // perform TAA here using colorHistory + input -> output
+                resources.detach(data.output, &current.color, &current.colorDesc);
+            });
+    return colorGradingConfig.asSubpass ? taa.getData().tonemappedOutput : taa.getData().output;
+}
+
 FrameGraphId<FrameGraphTexture> PostProcessManager::opaqueBlit(FrameGraph& fg,
-        FrameGraphId<FrameGraphTexture> input, FrameGraphTexture::Descriptor outDesc) noexcept {
+        FrameGraphId<FrameGraphTexture> input, FrameGraphTexture::Descriptor outDesc,
+        SamplerMagFilter filter) noexcept {
 
     struct PostProcessScaling {
         FrameGraphId<FrameGraphTexture> input;
@@ -1192,8 +1789,7 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::opaqueBlit(FrameGraph& fg,
                 auto in = resources.get(data.srt);
                 auto out = resources.get(data.drt);
                 driver.blit(TargetBufferFlags::COLOR,
-                        out.target, out.params.viewport, in.target, in.params.viewport,
-                        SamplerMagFilter::LINEAR);
+                        out.target, out.params.viewport, in.target, in.params.viewport, filter);
             });
 
     // we rely on automatic culling of unused render passes
@@ -1228,8 +1824,9 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::blendBlit(
                 auto out = resources.get(data.drt);
                 auto const& desc = resources.getDescriptor(data.input);
 
+                const StaticString blitterNames[3] = { "blitLow", "blitMedium", "blitHigh" };
                 unsigned index = std::min(2u, (unsigned)quality);
-                PostProcessMaterial& material = mBlit[index];
+                auto& material = getPostProcessMaterial(blitterNames[index]);
                 FMaterialInstance* const mi = material.getMaterialInstance();
                 mi->setParameter("color", color, {
                         .filterMag = SamplerMagFilter::LINEAR,
@@ -1273,22 +1870,31 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::resolve(FrameGraph& fg,
 
     auto& ppResolve = fg.addPass<ResolveData>("resolve",
             [&](FrameGraph::Builder& builder, auto& data) {
+                FrameGraphId<FrameGraphTexture> colorAttachmentSrc{};
+                FrameGraphId<FrameGraphTexture> depthAttachmentSrc{};
+                FrameGraphId<FrameGraphTexture> colorAttachmentDst{};
+                FrameGraphId<FrameGraphTexture> depthAttachmentDst{};
+
                 auto outputDesc = desc;
                 input = builder.read(input);
+
+                (isDepthFormat(desc.format) ? depthAttachmentSrc : colorAttachmentSrc) = input;
                 data.srt = builder.createRenderTarget(builder.getName(input), {
-                        .attachments = { input }, .samples = desc.samples });
+                        .attachments = { colorAttachmentSrc, depthAttachmentSrc }, .samples = desc.samples });
 
                 outputDesc.levels = 1;
                 outputDesc.samples = 0;
                 data.output = builder.createTexture(outputBufferName, outputDesc);
                 data.output = builder.write(data.output);
+
+                (isDepthFormat(desc.format) ? depthAttachmentDst : colorAttachmentDst) = data.output;
                 data.drt = builder.createRenderTarget(outputBufferName, {
-                        .attachments = { data.output } });
+                        .attachments = { colorAttachmentDst, depthAttachmentDst } });
             },
             [](FrameGraphPassResources const& resources, auto const& data, DriverApi& driver) {
                 auto in = resources.get(data.srt);
                 auto out = resources.get(data.drt);
-                driver.blit(TargetBufferFlags::COLOR,
+                driver.blit(TargetBufferFlags::COLOR | TargetBufferFlags::DEPTH,
                         out.target, out.params.viewport, in.target, in.params.viewport,
                         SamplerMagFilter::NEAREST);
             });

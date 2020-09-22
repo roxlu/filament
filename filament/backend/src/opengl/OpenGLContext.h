@@ -32,6 +32,7 @@ public:
     static constexpr const size_t MAX_TEXTURE_UNIT_COUNT = 16;   // All mobile GPUs as of 2016
     static constexpr const size_t MAX_BUFFER_BINDINGS = 32;
     typedef math::details::TVec4<GLint> vec4gli;
+    typedef math::details::TVec2<GLclampf> vec2glf;
 
     struct RenderPrimitive {
         GLuint vao = 0;
@@ -91,6 +92,7 @@ public:
 
     inline void setScissor(GLint left, GLint bottom, GLsizei width, GLsizei height) noexcept;
     inline void viewport(GLint left, GLint bottom, GLsizei width, GLsizei height) noexcept;
+    inline void depthRange(GLclampf near, GLclampf far) noexcept;
 
     void deleteBuffers(GLsizei n, const GLuint* buffers, GLenum target) noexcept;
     void deleteVextexArrays(GLsizei n, const GLuint* arrays) noexcept;
@@ -120,11 +122,13 @@ public:
         bool EXT_color_buffer_float = false;
         bool APPLE_color_buffer_packed_float = false;
         bool EXT_multisampled_render_to_texture = false;
+        bool EXT_multisampled_render_to_texture2 = false;
         bool KHR_debug = false;
         bool EXT_texture_sRGB = false;
         bool EXT_texture_compression_s3tc_srgb = false;
         bool EXT_disjoint_timer_query = false;
         bool EXT_shader_framebuffer_fetch = false;
+        bool EXT_clip_control = false;
     } ext;
 
     struct {
@@ -246,6 +250,7 @@ private:
         struct {
             vec4gli scissor { 0 };
             vec4gli viewport { 0 };
+            vec2glf depthRange { 0.0f, 1.0f };
         } window;
 
         struct {
@@ -298,10 +303,10 @@ constexpr size_t OpenGLContext::getIndexForCap(GLenum cap) noexcept { //NOLINT
         case GL_PRIMITIVE_RESTART_FIXED_INDEX:  index =  9; break;
         case GL_RASTERIZER_DISCARD:             index = 10; break;
 #ifdef GL_ARB_seamless_cube_map
-            case GL_TEXTURE_CUBE_MAP_SEAMLESS:      index = 11; break;
+        case GL_TEXTURE_CUBE_MAP_SEAMLESS:      index = 11; break;
 #endif
 #if GL41_HEADERS
-            case GL_PROGRAM_POINT_SIZE:             index = 12; break;
+        case GL_PROGRAM_POINT_SIZE:             index = 12; break;
 #endif
         default: index = 13; break; // should never happen
     }
@@ -358,6 +363,13 @@ void OpenGLContext::viewport(GLint left, GLint bottom, GLsizei width, GLsizei he
     });
 }
 
+void OpenGLContext::depthRange(GLclampf near, GLclampf far) noexcept {
+    vec2glf depthRange(near, far);
+    update_state(state.window.depthRange, depthRange, [&]() {
+        glDepthRangef(near, far);
+    });
+}
+
 void OpenGLContext::bindVertexArray(RenderPrimitive const* p) noexcept {
     RenderPrimitive* vao = p ? const_cast<RenderPrimitive *>(p) : &mDefaultVAO;
     update_state(state.vao.p, vao, [&]() {
@@ -376,7 +388,7 @@ void OpenGLContext::bindVertexArray(RenderPrimitive const* p) noexcept {
 void OpenGLContext::bindBufferRange(GLenum target, GLuint index, GLuint buffer,
         GLintptr offset, GLsizeiptr size) noexcept {
     size_t targetIndex = getIndexForBufferTarget(target);
-    assert(targetIndex <= 1); // sanity check
+    assert(targetIndex <= 1); // validity check
 
     // this ALSO sets the generic binding
     if (   state.buffers.targets[targetIndex].buffers[index].name != buffer

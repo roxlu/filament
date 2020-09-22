@@ -70,6 +70,9 @@ class ModelViewer(val engine: Engine) : android.view.View.OnTouchListener {
     val progress
         get() = resourceLoader.asyncGetLoadProgress()
 
+    var normalizeSkinningWeights = true
+    var recomputeBoundingBoxes = false
+
     val scene: Scene
     val view: View
     val camera: Camera
@@ -81,6 +84,8 @@ class ModelViewer(val engine: Engine) : android.view.View.OnTouchListener {
     private lateinit var gestureDetector: GestureDetector
     private var surfaceView: SurfaceView? = null
     private var textureView: TextureView? = null
+
+    private var fetchResourcesJob: Job? = null
 
     private val renderer: Renderer
     private var swapChain: SwapChain? = null
@@ -101,7 +106,7 @@ class ModelViewer(val engine: Engine) : android.view.View.OnTouchListener {
         view.camera = camera
 
         assetLoader = AssetLoader(engine, MaterialProvider(engine), EntityManager.get())
-        resourceLoader = ResourceLoader(engine, false, false)
+        resourceLoader = ResourceLoader(engine, normalizeSkinningWeights, recomputeBoundingBoxes)
 
         // Always add a direct light source since it is required for shadowing.
         // We highly recommend adding an indirect light as well.
@@ -187,7 +192,7 @@ class ModelViewer(val engine: Engine) : android.view.View.OnTouchListener {
     fun loadModelGltfAsync(buffer: Buffer, callback: (String) -> Buffer) {
         destroyModel()
         asset = assetLoader.createAssetFromJson(buffer)
-        CoroutineScope(Dispatchers.IO).launch {
+        fetchResourcesJob = CoroutineScope(Dispatchers.IO).launch {
             fetchResources(asset!!, callback)
         }
     }
@@ -214,7 +219,9 @@ class ModelViewer(val engine: Engine) : android.view.View.OnTouchListener {
      * Frees all entities associated with the most recently-loaded model.
      */
     fun destroyModel() {
+        fetchResourcesJob?.cancel()
         asset?.let { asset ->
+            this.scene.removeEntities(asset.entities)
             assetLoader.destroyAsset(asset)
             this.asset = null
             this.animator = null

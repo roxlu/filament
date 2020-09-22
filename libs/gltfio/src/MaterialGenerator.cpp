@@ -80,7 +80,7 @@ std::string shaderFromKey(const MaterialKey& config) {
     std::string shader = "void material(inout MaterialInputs material) {\n";
 
     if (config.hasNormalTexture && !config.unlit) {
-        shader += "float2 normalUV = ${normal};\n";
+        shader += "highp float2 normalUV = ${normal};\n";
         if (config.hasTextureTransforms) {
             shader += "normalUV = (vec3(normalUV, 1.0) * materialParams.normalUvMatrix).xy;\n";
         }
@@ -91,7 +91,7 @@ std::string shaderFromKey(const MaterialKey& config) {
     }
 
     if (config.hasClearCoat && config.hasClearCoatNormalTexture && !config.unlit) {
-        shader += "float2 clearCoatNormalUV = ${clearCoatNormal};\n";
+        shader += "highp float2 clearCoatNormalUV = ${clearCoatNormal};\n";
         if (config.hasTextureTransforms) {
             shader += "clearCoatNormalUV = (vec3(clearCoatNormalUV, 1.0) * "
                     "materialParams.clearCoatNormalUvMatrix).xy;\n";
@@ -116,7 +116,7 @@ std::string shaderFromKey(const MaterialKey& config) {
     )SHADER";
 
     if (config.hasBaseColorTexture) {
-        shader += "float2 baseColorUV = ${color};\n";
+        shader += "highp float2 baseColorUV = ${color};\n";
         if (config.hasTextureTransforms) {
             shader += "baseColorUV = (vec3(baseColorUV, 1.0) * "
                     "materialParams.baseColorUvMatrix).xy;\n";
@@ -161,7 +161,7 @@ std::string shaderFromKey(const MaterialKey& config) {
             )SHADER";
         }
         if (config.hasMetallicRoughnessTexture) {
-            shader += "float2 metallicRoughnessUV = ${metallic};\n";
+            shader += "highp float2 metallicRoughnessUV = ${metallic};\n";
             if (config.hasTextureTransforms) {
                 shader += "metallicRoughnessUV = (vec3(metallicRoughnessUV, 1.0) * "
                         "materialParams.metallicRoughnessUvMatrix).xy;\n";
@@ -181,7 +181,7 @@ std::string shaderFromKey(const MaterialKey& config) {
             }
         }
         if (config.hasOcclusionTexture) {
-            shader += "float2 aoUV = ${ao};\n";
+            shader += "highp float2 aoUV = ${ao};\n";
             if (config.hasTextureTransforms) {
                 shader += "aoUV = (vec3(aoUV, 1.0) * materialParams.occlusionUvMatrix).xy;\n";
             }
@@ -191,7 +191,7 @@ std::string shaderFromKey(const MaterialKey& config) {
             )SHADER";
         }
         if (config.hasEmissiveTexture) {
-            shader += "float2 emissiveUV = ${emissive};\n";
+            shader += "highp float2 emissiveUV = ${emissive};\n";
             if (config.hasTextureTransforms) {
                 shader += "emissiveUV = (vec3(emissiveUV, 1.0) * "
                         "materialParams.emissiveUvMatrix).xy;\n";
@@ -200,6 +200,28 @@ std::string shaderFromKey(const MaterialKey& config) {
                 material.emissive.rgb *= texture(materialParams_emissiveMap, emissiveUV).rgb;
             )SHADER";
         }
+        if (config.hasTransmission) {
+            shader += R"SHADER(
+                material.transmission = materialParams.transmissionFactor;
+
+                // KHR_materials_transmission stipulates that baseColor be used for absorption, and
+                // it says "the transmitted light will be modulated by this color as it passes",
+                // which is inverted from Filament's notion of absorption.  Note that Filament
+                // clamps this value to [0,1].
+                material.absorption = 1.0 - material.baseColor.rgb;
+
+            )SHADER";
+            if (config.hasTransmissionTexture) {
+                shader += "highp float2 transmissionUV = ${transmission};\n";
+                if (config.hasTextureTransforms) {
+                    shader += "transmissionUV = (vec3(transmissionUV, 1.0) * "
+                            "materialParams.transmissionUvMatrix).xy;\n";
+                }
+                shader += R"SHADER(
+                    material.transmission *= texture(materialParams_transmissionMap, transmissionUV).r;
+                )SHADER";
+            }
+        }
         if (config.hasClearCoat) {
             shader += R"SHADER(
                 material.clearCoat = materialParams.clearCoatFactor;
@@ -207,7 +229,7 @@ std::string shaderFromKey(const MaterialKey& config) {
             )SHADER";
 
             if (config.hasClearCoatTexture) {
-                shader += "float2 clearCoatUV = ${clearCoat};\n";
+                shader += "highp float2 clearCoatUV = ${clearCoat};\n";
                 if (config.hasTextureTransforms) {
                     shader += "clearCoatUV = (vec3(clearCoatUV, 1.0) * "
                             "materialParams.clearCoatUvMatrix).xy;\n";
@@ -218,7 +240,7 @@ std::string shaderFromKey(const MaterialKey& config) {
             }
 
             if (config.hasClearCoatRoughnessTexture) {
-                shader += "float2 clearCoatRoughnessUV = ${clearCoatRoughness};\n";
+                shader += "highp float2 clearCoatRoughnessUV = ${clearCoatRoughness};\n";
                 if (config.hasTextureTransforms) {
                     shader += "clearCoatRoughnessUV = (vec3(clearCoatRoughnessUV, 1.0) * "
                               "materialParams.clearCoatRoughnessUvMatrix).xy;\n";
@@ -242,6 +264,8 @@ Material* createMaterial(Engine* engine, const MaterialKey& config, const UvMap&
             .name(name)
             .flipUV(false)
             .specularAmbientOcclusion(MaterialBuilder::SpecularAmbientOcclusion::SIMPLE)
+            .specularAntiAliasing(true)
+            .clearCoatIorChange(false)
             .material(shader.c_str())
             .doubleSided(config.doubleSided)
             .targetApi(filamat::targetApiFromBackend(engine->getBackend()));
@@ -345,20 +369,47 @@ Material* createMaterial(Engine* engine, const MaterialKey& config, const UvMap&
         }
     }
 
-    switch (config.alphaMode) {
-        case AlphaMode::OPAQUE:
-            builder.blending(MaterialBuilder::BlendingMode::OPAQUE);
-            break;
-        case AlphaMode::MASK:
-            builder.blending(MaterialBuilder::BlendingMode::MASKED);
-            break;
-        case AlphaMode::BLEND:
-            builder.blending(MaterialBuilder::BlendingMode::FADE);
-            builder.depthWrite(true);
-            break;
-        default:
-            // Ignore
-            break;
+    // TRANSMISSION
+    if (config.hasTransmission) {
+
+        // According to KHR_materials_transmission, the minimum expectation for a compliant renderer
+        // is to at least render any opaque objects that lie behind transmitting objects.
+        builder.refractionMode(RefractionMode::SCREEN_SPACE);
+
+        // Thin refraction probably makes the most sense, given the language of the transmission
+        // spec and its lack of an IOR parameter. This means that we would do a good job rendering a
+        // window pane, but a poor job of rendering a glass full of liquid.
+        builder.refractionType(RefractionType::THIN);
+
+        builder.parameter(MaterialBuilder::UniformType::FLOAT, "transmissionFactor");
+        if (config.hasTransmissionTexture) {
+            builder.parameter(MaterialBuilder::SamplerType::SAMPLER_2D, "transmissionMap");
+            if (config.hasTextureTransforms) {
+                builder.parameter(MaterialBuilder::UniformType::MAT3, "transmissionUvMatrix");
+            }
+        }
+
+        builder.blending(MaterialBuilder::BlendingMode::FADE);
+        builder.depthWrite(true);
+
+    } else {
+
+        // BLENDING
+        switch (config.alphaMode) {
+            case AlphaMode::OPAQUE:
+                builder.blending(MaterialBuilder::BlendingMode::OPAQUE);
+                break;
+            case AlphaMode::MASK:
+                builder.blending(MaterialBuilder::BlendingMode::MASKED);
+                break;
+            case AlphaMode::BLEND:
+                builder.blending(MaterialBuilder::BlendingMode::FADE);
+                builder.depthWrite(true);
+                break;
+            default:
+                // Ignore
+                break;
+        }
     }
 
     if (config.unlit) {

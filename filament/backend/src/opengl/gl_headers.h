@@ -17,7 +17,7 @@
 #ifndef TNT_FILAMENT_DRIVER_GL_HEADERS_H
 #define TNT_FILAMENT_DRIVER_GL_HEADERS_H
 
-#if defined(ANDROID) || defined(SWIFTSHADER) || defined(FILAMENT_USE_EXTERNAL_GLES3) || defined(__EMSCRIPTEN__)
+#if defined(ANDROID) || defined(FILAMENT_USE_EXTERNAL_GLES3) || defined(__EMSCRIPTEN__)
 
     #include <GLES3/gl3.h>
     #include <GLES2/gl2ext.h>
@@ -51,6 +51,15 @@
 #ifdef GL_EXT_disjoint_timer_query
         extern PFNGLGETQUERYOBJECTUI64VEXTPROC glGetQueryObjectui64v;
         #define GL_TIME_ELAPSED               0x88BF
+#endif
+#ifdef GL_EXT_clip_control
+        extern PFNGLCLIPCONTROLEXTPROC glClipControl;
+        #ifndef GL_LOWER_LEFT
+        #define GL_LOWER_LEFT GL_LOWER_LEFT_EXT
+        #endif
+        #ifndef GL_ZERO_TO_ONE
+        #define GL_ZERO_TO_ONE GL_ZERO_TO_ONE_EXT
+        #endif
 #endif
     }
 

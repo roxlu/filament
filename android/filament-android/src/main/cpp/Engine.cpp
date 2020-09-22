@@ -120,7 +120,7 @@ Java_com_google_android_filament_Engine_nDestroyRenderer(JNIEnv*, jclass,
 
 // Camera
 
-extern "C" JNIEXPORT jlong JNICALL
+extern "C" [[deprecated]] JNIEXPORT jlong JNICALL
 Java_com_google_android_filament_Engine_nCreateCamera(JNIEnv*, jclass,
         jlong nativeEngine) {
     Engine* engine = (Engine*) nativeEngine;
@@ -135,7 +135,15 @@ Java_com_google_android_filament_Engine_nCreateCameraWithEntity(JNIEnv*, jclass,
     return (jlong) engine->createCamera(entity);
 }
 
-extern "C" JNIEXPORT void JNICALL
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_google_android_filament_Engine_nGetCameraComponent(JNIEnv*, jclass,
+        jlong nativeEngine, jint entity_) {
+    Engine* engine = (Engine*) nativeEngine;
+    Entity& entity = *reinterpret_cast<Entity*>(&entity_);
+    return (jlong) engine->getCameraComponent(entity);
+}
+
+extern "C" [[deprecated]] JNIEXPORT void JNICALL
 Java_com_google_android_filament_Engine_nDestroyCamera(JNIEnv*, jclass,
         jlong nativeEngine, jlong nativeCamera) {
     Engine* engine = (Engine*) nativeEngine;

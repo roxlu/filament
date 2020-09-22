@@ -36,6 +36,12 @@
 #    define UTILS_PUBLIC  
 #endif
 
+#if __has_attribute(deprecated)
+#   define UTILS_DEPRECATED [[deprecated]]
+#else
+#   define UTILS_DEPRECATED
+#endif
+
 #if __has_attribute(packed)
 #   define UTILS_PACKED __attribute__((packed))
 #else
@@ -183,7 +189,7 @@
 
 
 // ssize_t is a POSIX type.
-#if defined(WIN32)
+#if defined(WIN32) || defined(_WIN32)
 #include <BaseTsd.h>
 typedef SSIZE_T ssize_t;
 #endif
@@ -194,7 +200,7 @@ typedef SSIZE_T ssize_t;
 #   define UTILS_EMPTY_BASES
 #endif
 
-#if defined(WIN32)
+#if defined(WIN32) || defined(_WIN32)
     #define IMPORTSYMB __declspec(dllimport)
 #else
     #define IMPORTSYMB

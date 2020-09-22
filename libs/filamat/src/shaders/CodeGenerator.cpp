@@ -64,6 +64,10 @@ io::sstream& CodeGenerator::generateProlog(io::sstream& out, ShaderType type,
             break;
     }
 
+    // This allows our includer system to use the #line directive to denote the source file for
+    // #included code. This way, glslang reports errors more accurately.
+    out << "#extension GL_GOOGLE_cpp_style_line_directive : enable\n\n";
+
     if (mTargetApi == TargetApi::VULKAN) {
         out << "#define TARGET_VULKAN_ENVIRONMENT\n";
     }
@@ -210,6 +214,30 @@ io::sstream& CodeGenerator::generateShaderInputs(io::sstream& out, ShaderType ty
     }
     return out;
 }
+
+utils::io::sstream& CodeGenerator::generateOutput(utils::io::sstream& out, ShaderType type,
+        const utils::CString& name, size_t index,
+        MaterialBuilder::VariableQualifier qualifier,
+        MaterialBuilder::OutputType outputType) const {
+    if (name.empty() || type == ShaderType::VERTEX) {
+        return out;
+    }
+
+    // TODO: add and support additional variable qualifiers
+    (void) qualifier;
+    assert(qualifier == MaterialBuilder::VariableQualifier::OUT);
+
+    const char* typeString = getOutputTypeName(outputType);
+
+    out << "\n#define FRAG_OUTPUT" << index << " " << name.c_str() << "\n";
+    out << "\n#define FRAG_OUTPUT_AT" << index << " output_" << name.c_str() << "\n";
+    out << "\n#define FRAG_OUTPUT_TYPE" << index << " " << typeString << "\n";
+    out << "LAYOUT_LOCATION(" << index << ") out " << typeString <<
+        " output_" << name.c_str() << ";\n";
+
+    return out;
+}
+
 
 io::sstream& CodeGenerator::generateDepthShaderMain(io::sstream& out, ShaderType type) const {
     if (type == ShaderType::VERTEX) {
@@ -562,6 +590,16 @@ char const* CodeGenerator::getUniformTypeName(UniformInterfaceBlock::Type type) 
         case Type::UINT4:  return "uvec4";
         case Type::MAT3:   return "mat3";
         case Type::MAT4:   return "mat4";
+    }
+}
+
+char const* CodeGenerator::getOutputTypeName(MaterialBuilder::OutputType type) noexcept {
+    using Type = UniformInterfaceBlock::Type;
+    switch (type) {
+        case MaterialBuilder::OutputType::FLOAT:  return "float";
+        case MaterialBuilder::OutputType::FLOAT2: return "float2";
+        case MaterialBuilder::OutputType::FLOAT3: return "float3";
+        case MaterialBuilder::OutputType::FLOAT4: return "float4";
     }
 }
 

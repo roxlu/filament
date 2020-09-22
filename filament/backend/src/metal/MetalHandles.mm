@@ -165,7 +165,8 @@ void MetalRenderPrimitive::setBuffers(MetalVertexBuffer* vertexBuffer, MetalInde
 }
 
 MetalProgram::MetalProgram(id<MTLDevice> device, const Program& program) noexcept
-    : HwProgram(program.getName()) {
+    : HwProgram(program.getName()), vertexFunction(nil), fragmentFunction(nil), samplerGroupInfo(),
+        isValid(false) {
 
     using MetalFunctionPtr = __strong id<MTLFunction>*;
 
@@ -195,11 +196,15 @@ MetalProgram::MetalProgram(id<MTLDevice> device, const Program& program) noexcep
                         [error.localizedDescription cStringUsingEncoding:NSUTF8StringEncoding];
                 utils::slog.w << description << utils::io::endl;
             }
-            ASSERT_POSTCONDITION(false, "Unable to compile Metal shading library.");
+            PANIC_LOG("Failed to compile Metal program.");
+            return;
         }
 
         *shaderFunctions[i] = [library newFunctionWithName:@"main0"];
     }
+
+    // All stages of the program have compiled successfuly, this is a valid program.
+    isValid = true;
 
     samplerGroupInfo = program.getSamplerGroupInfo();
 }
@@ -319,6 +324,16 @@ MetalTexture::MetalTexture(MetalContext& context, SamplerType target, uint8_t le
     }
 }
 
+MetalTexture::MetalTexture(MetalContext& context, SamplerType target, uint8_t levels, TextureFormat format,
+        uint8_t samples, uint32_t width, uint32_t height, uint32_t depth, TextureUsage usage,
+        id<MTLTexture> metalTexture) noexcept
+    : HwTexture(target, levels, samples, width, height, depth, format, usage), context(context),
+        externalImage(context), reshaper(format) {
+    texture = metalTexture;
+    minLod = 0;
+    maxLod = levels - 1;
+}
+
 MetalTexture::~MetalTexture() {
     externalImage.set(nullptr);
 }
@@ -414,7 +429,11 @@ void MetalTexture::loadSlice(uint32_t level, uint32_t xoffset, uint32_t yoffset,
     // Depending on the size of the required buffer, we either allocate a staging buffer or a
     // staging texture. Then the texture data is blited to the "real" texture.
     const size_t stagingBufferSize = bytesPerSlice * depth;
-    if (UTILS_LIKELY(stagingBufferSize <= context.device.maxBufferLength)) {
+    NSUInteger deviceMaxBufferLength = 0;
+    if (@available(macOS 10.14, iOS 12, *)) {
+        deviceMaxBufferLength = context.device.maxBufferLength;
+    }
+    if (UTILS_LIKELY(stagingBufferSize <= deviceMaxBufferLength)) {
         auto entry = context.bufferPool->acquireBuffer(stagingBufferSize);
         memcpy(entry->buffer.contents,
                 static_cast<uint8_t*>(data.buffer) + sourceOffset,
@@ -476,13 +495,13 @@ void MetalTexture::updateLodRange(uint32_t level) {
 }
 
 MetalRenderTarget::MetalRenderTarget(MetalContext* context, uint32_t width, uint32_t height,
-        uint8_t samples, Attachment colorAttachments[4], Attachment depthAttachment) :
+        uint8_t samples, Attachment colorAttachments[MRT::TARGET_COUNT], Attachment depthAttachment) :
         HwRenderTarget(width, height), context(context), samples(samples) {
     // If we were given a single-sampled texture but the samples parameter is > 1, we create
     // multisampled sidecar textures and do a resolve automatically.
     const bool msaaResolve = samples > 1;
 
-    for (size_t i = 0; i < 4; i++) {
+    for (size_t i = 0; i < MRT::TARGET_COUNT; i++) {
         if (!colorAttachments[i]) {
             continue;
         }
@@ -523,7 +542,7 @@ void MetalRenderTarget::setUpRenderPassAttachments(MTLRenderPassDescriptor* desc
 
     const auto discardFlags = params.flags.discardEnd;
 
-    for (size_t i = 0; i < 4; i++) {
+    for (size_t i = 0; i < MRT::TARGET_COUNT; i++) {
         Attachment attachment = getColorAttachment(i);
         if (!attachment) {
             continue;
@@ -538,10 +557,18 @@ void MetalRenderTarget::setUpRenderPassAttachments(MTLRenderPassDescriptor* desc
                 params.clearColor.r, params.clearColor.g, params.clearColor.b, params.clearColor.a);
 
         if (multisampledColor[i]) {
+            // We're rendering into our temporary MSAA texture and doing an automatic resolve.
+            // We should not be attempting to load anything into the MSAA texture.
+            assert(descriptor.colorAttachments[i].loadAction != MTLLoadActionLoad);
+
             descriptor.colorAttachments[i].texture = multisampledColor[i];
+            descriptor.colorAttachments[i].level = 0;
+            descriptor.colorAttachments[i].slice = 0;
             const bool discard = any(discardFlags & getMRTColorFlag(i));
             if (!discard) {
                 descriptor.colorAttachments[i].resolveTexture = attachment.texture;
+                descriptor.colorAttachments[i].resolveLevel = attachment.level;
+                descriptor.colorAttachments[i].resolveSlice = attachment.layer;
                 descriptor.colorAttachments[i].storeAction = MTLStoreActionMultisampleResolve;
             }
         }
@@ -556,17 +583,25 @@ void MetalRenderTarget::setUpRenderPassAttachments(MTLRenderPassDescriptor* desc
     descriptor.depthAttachment.clearDepth = params.clearDepth;
 
     if (multisampledDepth) {
+        // We're rendering into our temporary MSAA texture and doing an automatic resolve.
+        // We should not be attempting to load anything into the MSAA texture.
+        assert(descriptor.depthAttachment.loadAction != MTLLoadActionLoad);
+
         descriptor.depthAttachment.texture = multisampledDepth;
+        descriptor.depthAttachment.level = 0;
+        descriptor.depthAttachment.slice = 0;
         const bool discard = any(discardFlags & TargetBufferFlags::DEPTH);
         if (!discard) {
             descriptor.depthAttachment.resolveTexture = depthAttachment.texture;
+            descriptor.depthAttachment.resolveLevel = depthAttachment.level;
+            descriptor.depthAttachment.resolveSlice = depthAttachment.layer;
             descriptor.depthAttachment.storeAction = MTLStoreActionMultisampleResolve;
         }
     }
 }
 
 MetalRenderTarget::Attachment MetalRenderTarget::getColorAttachment(size_t index) {
-    assert(index < 4);
+    assert(index < MRT::TARGET_COUNT);
     Attachment result = color[index];
     if (index == 0 && defaultRenderTarget) {
         result.texture = acquireDrawable(context);

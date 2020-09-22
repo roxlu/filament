@@ -21,9 +21,10 @@
 #include <cstddef>
 
 namespace filament {
-    static constexpr size_t VARIANT_COUNT = 64;
+    static constexpr size_t VARIANT_COUNT = 128;
 
     // IMPORTANT: update filterVariant() when adding more variants
+    // Also be sure to update formatVariantString inside CommonWriter.cpp
     struct Variant {
         Variant() noexcept = default;
         constexpr explicit Variant(uint8_t key) noexcept : key(key) { }
@@ -35,21 +36,23 @@ namespace filament {
         // SKN: Skinning
         // DEP: Depth only
         // FOG: Fog
+        // VSM: Variance shadow maps
         //
         //   X: either 1 or 0
         //
-        //                    ...-----+-----+-----+-----+-----+-----+-----+
-        // Variant                 0  | FOG | DEP | SKN | SRE | DYN | DIR |
-        //                    ...-----+-----+-----+-----+-----+-----+-----+
+        //                    ...-----+-----+-----+-----+-----+-----+-----+-----+
+        // Variant                 0  | VSM | FOG | DEP | SKN | SRE | DYN | DIR |
+        //                    ...-----+-----+-----+-----+-----+-----+-----+-----+
         // Reserved variants:
-        //       Vertex depth             0    1     X     0     0     0
-        //     Fragment depth             0    1     0     0     0     0
-        //           Reserved             X    1     X     X     X     X
-        //           Reserved             X    0     X     1     0     0
+        //       Vertex depth            X     0     1     X     0     0     0
+        //     Fragment depth            X     0     1     0     0     0     0
+        //           Reserved            X     X     1     X     X     X     X
+        //           Reserved            X     X     0     X     1     0     0
+        //           Reserved            1     X     0     X     0     X     X
         //
         // Standard variants:
-        //      Vertex shader             0    0     X     X     0     X
-        //    Fragment shader             X    0     0     X     X     X
+        //      Vertex shader            0     0     0     X     X     X     X
+        //    Fragment shader            X     X     0     0     X     X     X
 
         uint8_t key = 0;
 
@@ -61,8 +64,10 @@ namespace filament {
         static constexpr uint8_t SKINNING_OR_MORPHING   = 0x08; // GPU skinning and/or morphing
         static constexpr uint8_t DEPTH                  = 0x10; // depth only variants
         static constexpr uint8_t FOG                    = 0x20; // fog
+        static constexpr uint8_t VSM                    = 0x40; // variance shadow maps
 
         static constexpr uint8_t VERTEX_MASK = DIRECTIONAL_LIGHTING |
+                                               DYNAMIC_LIGHTING |
                                                SHADOW_RECEIVER |
                                                SKINNING_OR_MORPHING |
                                                DEPTH;
@@ -71,12 +76,14 @@ namespace filament {
                                                  DYNAMIC_LIGHTING |
                                                  SHADOW_RECEIVER |
                                                  FOG |
-                                                 DEPTH;
+                                                 DEPTH |
+                                                 VSM;
 
         static constexpr uint8_t DEPTH_MASK = DIRECTIONAL_LIGHTING |
                                               DYNAMIC_LIGHTING |
                                               SHADOW_RECEIVER |
-                                              DEPTH;
+                                              DEPTH |
+                                              FOG;
 
         // the depth variant deactivates all variants that make no sense when writing the depth
         // only -- essentially, all fragment-only variants.
@@ -90,26 +97,46 @@ namespace filament {
         inline bool hasDynamicLighting() const noexcept { return key & DYNAMIC_LIGHTING; }
         inline bool hasShadowReceiver() const noexcept { return key & SHADOW_RECEIVER; }
         inline bool hasFog() const noexcept { return key & FOG; }
+        inline bool hasVsm() const noexcept { return key & VSM; }
 
         inline void setSkinning(bool v) noexcept { set(v, SKINNING_OR_MORPHING); }
         inline void setDirectionalLighting(bool v) noexcept { set(v, DIRECTIONAL_LIGHTING); }
         inline void setDynamicLighting(bool v) noexcept { set(v, DYNAMIC_LIGHTING); }
         inline void setShadowReceiver(bool v) noexcept { set(v, SHADOW_RECEIVER); }
         inline void setFog(bool v) noexcept { set(v, FOG); }
+        inline void setVsm(bool v) noexcept { set(v, VSM); }
 
         inline constexpr bool isDepthPass() const noexcept {
-            return (key & DEPTH_MASK) == DEPTH_VARIANT;
+            return isValidDepthVariant(key);
+        }
+
+        inline static constexpr bool isValidDepthVariant(uint8_t variantKey) noexcept {
+            // For a variant to be a valid depth variant, all of the bits in DEPTH_MASK must be 0,
+            // except for DEPTH.
+            return (variantKey & DEPTH_MASK) == DEPTH_VARIANT;
         }
 
         static constexpr bool isReserved(uint8_t variantKey) noexcept {
             // reserved variants that should just be skipped
-            return (variantKey & DEPTH_MASK) > DEPTH || (variantKey & 0b010111u) == 0b000100u;
+            // 1. If the DEPTH bit is set, then it must be a valid depth variant. Otherwise, the
+            // variant is reserved.
+            // 2. If SRE is set, either DYN or DIR must also be set (it makes no sense to have
+            // shadows without lights).
+            // 3. If VSM is set, then SRE must be set.
+            return
+                ((variantKey & DEPTH) && !isValidDepthVariant(variantKey)) ||
+                (variantKey & 0b0010111u) == 0b0000100u ||
+                (variantKey & 0b1010100u) == 0b1000000u;
         }
 
         static constexpr uint8_t filterVariantVertex(uint8_t variantKey) noexcept {
-            // filter out vertex variants that are not needed. For e.g. dynamic lighting
-            // doesn't affect the vertex shader.
-            return variantKey;
+            // filter out vertex variants that are not needed. For e.g. fog doesn't affect the
+            // vertex shader.
+            if (variantKey & DEPTH) {
+                // VSM affects the vertex shader, but only for DEPTH variants.
+                return variantKey & (VERTEX_MASK | VSM);
+            }
+            return variantKey & VERTEX_MASK;
         }
 
         static constexpr uint8_t filterVariantFragment(uint8_t variantKey) noexcept {
@@ -120,7 +147,7 @@ namespace filament {
 
         static constexpr uint8_t filterVariant(uint8_t variantKey, bool isLit) noexcept {
             // special case for depth variant
-            if ((variantKey & DEPTH_MASK) == DEPTH_VARIANT) {
+            if (isValidDepthVariant(variantKey)) {
                 return variantKey;
             }
             // when the shading mode is unlit, remove all the lighting variants

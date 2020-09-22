@@ -29,6 +29,9 @@
 #include <backend/DriverEnums.h>
 #include <backend/Handle.h>
 
+#include "fg/FrameGraph.h"
+#include "fg/FrameGraphPassResources.h"
+
 #include <math/vec3.h>
 
 #include <array>
@@ -45,10 +48,15 @@ class RenderPass;
 class ShadowMapManager {
 public:
 
-    ShadowMapManager(FEngine& engine);
-    ~ShadowMapManager();
+    enum class ShadowTechnique : uint8_t {
+        NONE = 0x0u,
+        SHADOW_MAP = 0x1u,
+        SCREEN_SPACE = 0x2u,
+    };
 
-    void terminate(backend::DriverApi& driverApi) noexcept;
+
+    explicit ShadowMapManager(FEngine& engine);
+    ~ShadowMapManager();
 
     // Reset shadow map layout.
     void reset() noexcept;
@@ -56,17 +64,18 @@ public:
     void setShadowCascades(size_t lightIndex, size_t cascades) noexcept;
     void addSpotShadowMap(size_t lightIndex) noexcept;
 
-    // Allocates shadow texture based on the shadows maps and their requirements.
-    void prepare(FEngine& engine, backend::DriverApi& driver, backend::SamplerGroup& samplerGroup,
-             FScene::LightSoa& lightData) noexcept;
-
     // Updates all of the shadow maps and performs culling.
     // Returns true if any of the shadow maps have visible shadows.
-    bool update(FEngine& engine, FView& view, UniformBuffer& perViewUb, UniformBuffer& shadowUb,
+    ShadowTechnique update(FEngine& engine, FView& view, UniformBuffer& perViewUb, UniformBuffer& shadowUb,
             FScene::RenderableSoa& renderableData, FScene::LightSoa& lightData) noexcept;
 
     // Renders all of the shadow maps.
-    void render(FEngine& engine, FView& view, backend::DriverApi& driver, RenderPass& pass) noexcept;
+    void render(FrameGraph& fg, FEngine& engine, FView& view, backend::DriverApi& driver,
+            RenderPass& pass) noexcept;
+
+    // Prepares the shadow sampler.
+    void prepareShadow(backend::Handle<backend::HwTexture> texture,
+            backend::SamplerGroup& viewSib) const noexcept;
 
     const ShadowMap* getCascadeShadowMap(size_t c) const noexcept {
         return mCascadeShadowMapCache[c].get();
@@ -74,18 +83,24 @@ public:
 
 private:
 
-    bool updateCascadeShadowMaps(FEngine& engine, FView& view, UniformBuffer& perViewUb,
-            FScene::RenderableSoa& renderableData, FScene::LightSoa& lightData) noexcept;
-    bool updateSpotShadowMaps(FEngine& engine, FView& view, UniformBuffer& shadowUb,
-            FScene::RenderableSoa& renderableData, FScene::LightSoa& lightData) noexcept;
-    void fillWithDebugPattern(backend::DriverApi& driverApi,
-            backend::Handle<backend::HwTexture> texture) const noexcept;
-    void destroyResources(backend::DriverApi& driver) noexcept;
-
     struct ShadowLayout {
         uint8_t layer = 0;
         uint32_t size = 0;
     };
+
+    struct TextureRequirements {
+        uint16_t size = 0;
+        uint8_t layers = 0;
+    } mTextureRequirements;
+
+    ShadowTechnique updateCascadeShadowMaps(FEngine& engine, FView& view, UniformBuffer& perViewUb,
+            FScene::RenderableSoa& renderableData, FScene::LightSoa& lightData) noexcept;
+    ShadowTechnique updateSpotShadowMaps(FEngine& engine, FView& view, UniformBuffer& shadowUb,
+            FScene::RenderableSoa& renderableData, FScene::LightSoa& lightData) noexcept;
+    static void fillWithDebugPattern(backend::DriverApi& driverApi,
+            backend::Handle<backend::HwTexture> texture, size_t dimensions) noexcept;
+
+    void calculateTextureRequirements(FEngine& engine, FScene::LightSoa& lightData) noexcept;
 
     class ShadowMapEntry {
     public:
@@ -112,45 +127,40 @@ private:
         bool mHasVisibleShadows = false;
     };
 
-    struct TextureState {
-        uint16_t size;
-        uint8_t layers;
-
-        TextureState(uint16_t size, uint8_t layers) : size(size), layers(layers) {}
-
-        bool operator==(const TextureState& rhs) const {
-            return size == rhs.size &&
-                   layers == rhs.layers;
-        }
-    } mTextureState;
-
     class CascadeSplits {
     public:
+        constexpr static size_t SPLIT_COUNT = CONFIG_MAX_SHADOW_CASCADES + 1;
+
         struct Params {
             math::mat4f proj = {};
             float near = 0.0f;
             float far = 0.0f;
             size_t cascadeCount = 1;
+            std::array<float, SPLIT_COUNT> splitPositions = { 0.0f };
 
             bool operator!=(const Params& rhs) const {
                 return proj != rhs.proj ||
                        near != rhs.near ||
                        far != rhs.far ||
-                       cascadeCount != rhs.cascadeCount;
+                       cascadeCount != rhs.cascadeCount ||
+                       splitPositions != rhs.splitPositions;
             }
         };
 
         CascadeSplits() : CascadeSplits(Params {}) {}
-        CascadeSplits(Params p);
+        explicit CascadeSplits(Params p);
 
+        // Split positions in world-space.
         const float* beginWs() const { return mSplitsWs; }
         const float* endWs() const { return mSplitsWs + mSplitCount; }
+
+        // Split positions in clip-space.
         const float* beginCs() const { return mSplitsCs; }
         const float* endCs() const { return mSplitsCs + mSplitCount; }
 
     private:
-        float mSplitsWs[CONFIG_MAX_SHADOW_CASCADES + 1];
-        float mSplitsCs[CONFIG_MAX_SHADOW_CASCADES + 1];
+        float mSplitsWs[SPLIT_COUNT];
+        float mSplitsCs[SPLIT_COUNT];
         size_t mSplitCount;
 
     } mCascadeSplits;
@@ -162,15 +172,17 @@ private:
     backend::TextureFormat mTextureFormat = backend::TextureFormat::DEPTH16;
     float mTextureZResolution = 1.0f / (1u << 16u);
 
-    backend::Handle<backend::HwTexture> mShadowMapTexture;
-    std::vector<backend::Handle<backend::HwRenderTarget>> mRenderTargets;
     std::vector<ShadowMapEntry> mCascadeShadowMaps;
     std::vector<ShadowMapEntry> mSpotShadowMaps;
+    backend::RenderPassParams mRenderPassParams;
 
     std::array<std::unique_ptr<ShadowMap>, CONFIG_MAX_SHADOW_CASCADES> mCascadeShadowMapCache;
     std::array<std::unique_ptr<ShadowMap>, CONFIG_MAX_SHADOW_CASTING_SPOTS> mSpotShadowMapCache;
 };
 
 } // namespace filament
+
+template<> struct utils::EnableBitMaskOperators<filament::ShadowMapManager::ShadowTechnique>
+        : public std::true_type {};
 
 #endif //TNT_FILAMENT_DETAILS_SHADOWMAPMANAGER_H

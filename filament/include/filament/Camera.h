@@ -212,7 +212,13 @@ public:
      * First, pass an aspect of 1.0 to setProjection. Then set the scaling with the desired aspect
      * ratio:
      *
-     *     camera->setScaling(double4 {1.0, width / height, 1.0, 1.0});
+     *     const double aspect = width / height;
+     *
+     *     // with Fov::HORIZONTAL passed to setProjection:
+     *     camera->setScaling(double4 {1.0, aspect, 1.0, 1.0});
+     *
+     *     // with Fov::VERTICAL passed to setProjection:
+     *     camera->setScaling(double4 {1.0 / aspect, 1.0, 1.0, 1.0});
      *
      *
      * By default, this is an identity matrix.
@@ -226,13 +232,13 @@ public:
     /** Returns the projection matrix used for rendering.
      *
      * The projection matrix used for rendering always has its far plane set to infinity. This
-     * it why it may differ from the matrix set through setProjection() or setLensProjection().
+     * is why it may differ from the matrix set through setProjection() or setLensProjection().
      *
      * @return The projection matrix used for rendering
      *
      * @see setProjection, setLensProjection, setCustomProjection, getCullingProjectionMatrix
      */
-    const math::mat4 getProjectionMatrix() const noexcept;
+    math::mat4 getProjectionMatrix() const noexcept;
 
 
     /** Returns the projection matrix used for culling (far plane is finite).
@@ -241,7 +247,7 @@ public:
      *
      * @see setProjection, setLensProjection, getProjectionMatrix
      */
-    const math::mat4 getCullingProjectionMatrix() const noexcept;
+    math::mat4 getCullingProjectionMatrix() const noexcept;
 
 
     /** Returns the scaling amount used to scale the projection matrix.

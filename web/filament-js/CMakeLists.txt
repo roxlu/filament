@@ -12,12 +12,12 @@ set(CPP_SRC
   jsbindings.cpp)
 
 # The emcc options are not documented well, the best place to find them is the source:
-# https://github.com/kripken/emscripten/blob/master/src/settings.js
+# https://github.com/kripken/emscripten/blob/main/src/settings.js
 
 # The following setting is required because we disable RTTI.
 set(COPTS "${COPTS} -DEMSCRIPTEN_HAS_UNBOUND_TYPE_NAMES=0")
 
-# Uncomment the following line to check for leaks with leaks.html
+# Uncomment the following line to check for leaks
 # set(LOPTS "${LOPTS} --memoryprofiler")
 
 set(LOPTS "${LOPTS} --bind")
@@ -38,7 +38,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${COPTS}")
 add_executable(filament-js ${CPP_SRC})
 
 set_target_properties(filament-js PROPERTIES
-    LINK_DEPENDS "${EXTERN_POSTJS_SRC};${POSTJS_SRC}"
+    LINK_DEPENDS "${EXTERN_POSTJS_SRC}"
     OUTPUT_NAME filament)
 
 target_link_libraries(filament-js PRIVATE filament math utils image filameshio gltfio_core stb)

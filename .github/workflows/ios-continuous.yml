@@ -3,7 +3,9 @@ name: iOS
 on:
   push:
     branches:
-      - master
+      - main
+      - release
+      - rc/**
 
 jobs:
   build-ios:

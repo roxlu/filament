@@ -37,8 +37,6 @@
 #include <utils/CString.h>
 #include <utils/Panic.h>
 
-#include <sstream>
-
 using namespace utils;
 using namespace filaflat;
 
@@ -76,7 +74,7 @@ Material* Material::Builder::build(Engine& engine) {
     MaterialParser* materialParser = FMaterial::createParser(
             upcast(engine).getBackend(), mImpl->mPayload, mImpl->mSize);
 
-    uint32_t v;
+    uint32_t v = 0;
     materialParser->getShaderModels(&v);
     utils::bitset32 shaderModels;
     shaderModels.setValue(v);
@@ -122,7 +120,7 @@ static void addSamplerGroup(Program& pb, uint8_t bindingPoint, SamplerInterfaceB
             CString uniformName(
                     SamplerInterfaceBlock::getUniformName(sib.getName().c_str(),
                             list[i].name.c_str()));
-            uint8_t binding;
+            uint8_t binding = 0;
             UTILS_UNUSED bool ok = map.getSamplerBinding(bindingPoint, (uint8_t)i, &binding);
             assert(ok);
             samplers[i] = { std::move(uniformName), binding };
@@ -183,11 +181,17 @@ FMaterial::FMaterial(FEngine& engine, const Material::Builder& builder)
     using DepthFunc = RasterState::DepthFunc;
     switch (mBlendingMode) {
         case BlendingMode::OPAQUE:
-        case BlendingMode::MASKED:
             mRasterState.blendFunctionSrcRGB   = BlendFunction::ONE;
             mRasterState.blendFunctionSrcAlpha = BlendFunction::ONE;
             mRasterState.blendFunctionDstRGB   = BlendFunction::ZERO;
             mRasterState.blendFunctionDstAlpha = BlendFunction::ZERO;
+            mRasterState.depthWrite = true;
+            break;
+        case BlendingMode::MASKED:
+            mRasterState.blendFunctionSrcRGB   = BlendFunction::ONE;
+            mRasterState.blendFunctionSrcAlpha = BlendFunction::ZERO;
+            mRasterState.blendFunctionDstRGB   = BlendFunction::ZERO;
+            mRasterState.blendFunctionDstAlpha = BlendFunction::ONE;
             mRasterState.depthWrite = true;
             break;
         case BlendingMode::TRANSPARENT:
@@ -221,20 +225,20 @@ FMaterial::FMaterial(FEngine& engine, const Material::Builder& builder)
             break;
     }
 
-    bool depthWriteSet;
+    bool depthWriteSet = false;
     parser->getDepthWriteSet(&depthWriteSet);
     if (depthWriteSet) {
-        bool depthWrite;
+        bool depthWrite = false;
         parser->getDepthWrite(&depthWrite);
         mRasterState.depthWrite = depthWrite;
     }
 
     // if doubleSided() was called we override culling()
-    bool doubleSideSet;
+    bool doubleSideSet = false;
     parser->getDoubleSidedSet(&doubleSideSet);
     parser->getDoubleSided(&mDoubleSided);
     parser->getCullingMode(&mCullingMode);
-    bool depthTest;
+    bool depthTest = false;
     parser->getDepthTest(&depthTest);
 
     if (doubleSideSet) {
@@ -258,10 +262,10 @@ FMaterial::FMaterial(FEngine& engine, const Material::Builder& builder)
         }
     }
 
-    bool colorWrite;
+    bool colorWrite = false;
     parser->getColorWrite(&colorWrite);
     mRasterState.colorWrite = colorWrite;
-    mRasterState.depthFunc = depthTest ? DepthFunc::LE : DepthFunc::A;
+    mRasterState.depthFunc = depthTest ? DepthFunc::GE : DepthFunc::A;
     mRasterState.alphaToCoverage = mBlendingMode == BlendingMode::MASKED;
 
     parser->hasSpecularAntiAliasing(&mSpecularAntiAliasing);
@@ -341,7 +345,7 @@ backend::Handle<backend::HwProgram> FMaterial::getSurfaceProgramSlow(uint8_t var
                 UibGenerator::getPerRenderableBonesUib().getName());
     }
 
-    addSamplerGroup(pb, BindingPoints::PER_VIEW, SibGenerator::getPerViewSib(), mSamplerBindings);
+    addSamplerGroup(pb, BindingPoints::PER_VIEW, SibGenerator::getPerViewSib(variantKey), mSamplerBindings);
     addSamplerGroup(pb, BindingPoints::PER_MATERIAL_INSTANCE, mSamplerInterfaceBlock, mSamplerBindings);
 
     return createAndCacheProgram(std::move(pb), variantKey);
@@ -473,29 +477,36 @@ void FMaterial::onEditCallback(void* userdata, const utils::CString& name, const
             packageSize);
 }
 
-void FMaterial::onQueryCallback(void* userdata, uint16_t* pvariants) {
+void FMaterial::onQueryCallback(void* userdata, uint64_t* pVariants) {
     FMaterial* material = upcast((Material*) userdata);
-    uint16_t variants = 0;
+    uint64_t variants = 0;
     auto& cachedPrograms = material->mCachedPrograms;
     for (size_t i = 0, n = cachedPrograms.size(); i < n; ++i) {
         if (cachedPrograms[i]) {
-            variants |= (1 << i);
+            variants |= (1u << i);
         }
     }
-    *pvariants = variants;
+    *pVariants = variants;
 }
 
  /** @}*/
- 
+
 MaterialParser* FMaterial::createParser(backend::Backend backend, const void* data, size_t size) {
     MaterialParser* materialParser = new MaterialParser(backend, data, size);
 
-    bool materialOK = materialParser->parse();
-    if (!ASSERT_POSTCONDITION_NON_FATAL(materialOK, "could not parse the material package")) {
+    MaterialParser::ParseResult materialResult = materialParser->parse();
+
+    if (!ASSERT_POSTCONDITION_NON_FATAL(materialResult != MaterialParser::ParseResult::ERROR_MISSING_BACKEND,
+                "the material was not built for the %s backend\n", backendToString(backend))) {
         return nullptr;
     }
 
-    uint32_t version;
+    if (!ASSERT_POSTCONDITION_NON_FATAL(materialResult == MaterialParser::ParseResult::SUCCESS,
+                "could not parse the material package")) {
+        return nullptr;
+    }
+
+    uint32_t version = 0;
     materialParser->getMaterialVersion(&version);
     ASSERT_PRECONDITION(version == MATERIAL_VERSION, "Material version mismatch. Expected %d but "
             "received %d.", MATERIAL_VERSION, version);

@@ -142,7 +142,7 @@ class App {
 
         this.swapChain = this.engine.createSwapChain();
         this.renderer = this.engine.createRenderer();
-        this.camera = this.engine.createCamera();
+        this.camera = this.engine.createCamera(Filament.EntityManager.get().create());
         this.view = this.engine.createView();
         this.view.setCamera(this.camera);
         this.view.setScene(this.scene);
@@ -269,7 +269,7 @@ Add the following script tag to your HTML file. This imports a small third-party
 listens for drag events and computes a rotation matrix.
 
 ```html
-<script src="https://unpkg.com/gltumble"></script>
+<script src="//unpkg.com/gltumble"></script>
 ```
 
 Next, replace the **initialize gltumble** and **apply gltumble matrix** comments with the following
@@ -292,8 +292,8 @@ That's it, we now have a fast-loading interactive demo. The complete JavaScript 
 [Filament release]: //github.com/google/filament/releases
 [previous tutorial]: tutorial_redball.html
 [Filament Material System]: https://google.github.io/filament/Materials.md.html
-[this OBJ file]: https://github.com/google/filament/blob/master/assets/models/monkey/monkey.obj
-[monkey folder]: https://github.com/google/filament/blob/master/assets/models/monkey
+[this OBJ file]: https://github.com/google/filament/blob/main/assets/models/monkey/monkey.obj
+[monkey folder]: https://github.com/google/filament/blob/main/assets/models/monkey
 
 [venetian_crossroads_2k.hdr]:
-//github.com/google/filament/blob/master/third_party/environments/venetian_crossroads_2k.hdr
+//github.com/google/filament/blob/main/third_party/environments/venetian_crossroads_2k.hdr

@@ -15,13 +15,27 @@ option(FILAMENT_ENABLE_JAVA "Compile Java projects, requires a JDK and the JAVA_
 
 option(FILAMENT_USE_EXTERNAL_GLES3 "Experimental: Compile Filament against OpenGL ES 3" OFF)
 
-option(FILAMENT_USE_SWIFTSHADER "Experimental: Compile Filament against SwiftShader" OFF)
-
-option(FILAMENT_GENERATE_JS_DOCS "Build WebGL documentation and tutorials" OFF)
+option(FILAMENT_USE_SWIFTSHADER "Compile Filament against SwiftShader" OFF)
 
 option(FILAMENT_ENABLE_LTO "Enable link-time optimizations if supported by the compiler" OFF)
 
 option(FILAMENT_SKIP_SAMPLES "Don't build samples" OFF)
+
+set(FILAMENT_PER_RENDER_PASS_ARENA_SIZE_IN_MB "2" CACHE STRING
+    "Per render pass arena size. Must be roughly 1 MB larger than FILAMENT_PER_FRAME_COMMANDS_SIZE_IN_MB, default 2."
+)
+
+set(FILAMENT_PER_FRAME_COMMANDS_SIZE_IN_MB "1" CACHE STRING
+    "Size of the high-level draw commands buffer. Rule of thumb, 1 MB less than FILAMENT_PER_RENDER_PASS_ARENA_SIZE_IN_MB, default 1."
+)
+
+set(FILAMENT_MIN_COMMAND_BUFFERS_SIZE_IN_MB "1" CACHE STRING
+    "Size of the command-stream buffer. As a rule of thumb use the same value as FILAMENT_PER_FRRAME_COMMANDS_SIZE_IN_MB, default 1."
+)
+
+set(FILAMENT_OPENGL_HANDLE_ARENA_SIZE_IN_MB "2" CACHE STRING
+    "Size of the OpenGL handle arena, default 2."
+)
 
 # ==================================================================================================
 # CMake policies
@@ -69,8 +83,21 @@ if (UNIX AND NOT APPLE AND NOT ANDROID AND NOT WEBGL)
     set(LINUX TRUE)
 endif()
 
-if (ANDROID OR WEBGL OR IOS OR FILAMENT_USE_SWIFTSHADER)
+if (ANDROID OR WEBGL OR IOS)
     set(IS_MOBILE_TARGET TRUE)
+endif()
+
+if (NOT ANDROID AND NOT WEBGL AND NOT IOS)
+    set(IS_HOST_PLATFORM TRUE)
+endif()
+
+if (IOS)
+    # Remove the headerpad_max_install_names linker flag on iOS. It causes warnings when linking
+    # executables with bitcode.
+    string(REPLACE "-Wl,-headerpad_max_install_names" "" CMAKE_C_LINK_FLAGS ${CMAKE_C_LINK_FLAGS})
+    string(REPLACE "-Wl,-headerpad_max_install_names" "" CMAKE_CXX_LINK_FLAGS ${CMAKE_CXX_LINK_FLAGS})
+    string(REPLACE "-Wl,-headerpad_max_install_names" "" CMAKE_SHARED_LIBRARY_CREATE_C_FLAGS ${CMAKE_SHARED_LIBRARY_CREATE_C_FLAGS})
+    string(REPLACE "-Wl,-headerpad_max_install_names" "" CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS ${CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS})
 endif()
 
 if (WIN32)
@@ -105,6 +132,23 @@ if (WIN32)
     # Instead generate debug info directly inside obj files.
     set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} ${CRT_FLAGS_DEBUG} /Z7")
     set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} ${CRT_FLAGS_DEBUG} /Z7")
+
+    # Special settings when building on CI.
+    if (${FILAMENT_WINDOWS_CI_BUILD})
+        set(LinkerFlags
+            CMAKE_SHARED_LINKER_FLAGS_DEBUG
+            CMAKE_EXE_LINKER_FLAGS_DEBUG
+            CMAKE_MODULE_LINKER_FLAGS_DEBUG
+            )
+        foreach(LinkerFlag ${LinkerFlags})
+            # The /debug flag outputs .pdb files, which we don't need on CI.
+            string(REPLACE "/debug" "" ${LinkerFlag} ${${LinkerFlag}})
+
+            # The /INCREMENTAL flag outputs .ilk files for incremental linking. These are huge, and
+            # we don't need them on CI.
+            string(REPLACE "/INCREMENTAL" "/INCREMENTAL:NO" ${LinkerFlag} ${${LinkerFlag}})
+        endforeach()
+    endif()
 endif()
 
 # ==================================================================================================
@@ -167,9 +211,9 @@ endif()
 # ==================================================================================================
 # General compiler flags
 # ==================================================================================================
-set(CXX_STANDARD "-std=c++14")
+set(CXX_STANDARD "-std=c++17")
 if (WIN32)
-    set(CXX_STANDARD "/std:c++14")
+    set(CXX_STANDARD "/std:c++17")
 endif()
 
 if (MSVC)
@@ -184,8 +228,7 @@ if (FILAMENT_USE_EXTERNAL_GLES3)
 endif()
 
 if (FILAMENT_USE_SWIFTSHADER)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DSWIFTSHADER")
-    set(EGL TRUE)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DFILAMENT_USE_SWIFTSHADER")
 endif()
 
 if (WIN32)
@@ -194,12 +237,18 @@ endif()
 
 if (LINUX)
     option(USE_STATIC_LIBCXX "Link against the static runtime libraries." ON)
-    if (${USE_STATIC_LIBCXX}) 
+    if (${USE_STATIC_LIBCXX})
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
         link_libraries("-static-libgcc -static-libstdc++")
         link_libraries(libc++.a)
         link_libraries(libc++abi.a)
     endif()
+
+    # Only linux, clang doesn't want to use a shared library that is not PIC.
+    # /usr/bin/ld: ../bluegl/libbluegl.a(BlueGL.cpp.o): relocation R_X86_64_32S
+    # against `.bss' can not be used when making a shared object; recompile with -fPIC
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
+
 endif()
 
 if (CYGWIN)
@@ -223,7 +272,12 @@ endif()
 # Release compiler flags
 # ==================================================================================================
 if (NOT MSVC)
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -fomit-frame-pointer -ffunction-sections -fdata-sections")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -fomit-frame-pointer")
+
+    # These aren't compatible with -fembed-bitcode (and seem to have no effect on Apple platforms anyway)
+    if (NOT IOS)
+        set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -ffunction-sections -fdata-sections")
+    endif()
 endif()
 
 # On Android RELEASE builds, we disable exceptions and RTTI to save some space (about 75 KiB
@@ -296,7 +350,7 @@ endif()
 
 # By default, build with Vulkan support on desktop platforms, although clients must request to use
 # it at run time.
-if (WIN32 OR WEBGL OR IOS OR FILAMENT_USE_SWIFTSHADER)
+if (WIN32 OR WEBGL OR IOS)
     option(FILAMENT_SUPPORTS_VULKAN "Include the Vulkan backend" OFF)
 else()
     option(FILAMENT_SUPPORTS_VULKAN "Include the Vulkan backend" ON)
@@ -320,6 +374,13 @@ if (NOT WEBGL)
     option(FILAMENT_BUILD_FILAMAT "Build filamat and JNI buildings" ON)
 else()
     option(FILAMENT_BUILD_FILAMAT "Build filamat and JNI buildings" OFF)
+endif()
+
+# By default, link in matdbg for Desktop + Debug only since it pulls in filamat and a web server.
+if (CMAKE_BUILD_TYPE STREQUAL "Debug" AND IS_HOST_PLATFORM)
+    option(FILAMENT_ENABLE_MATDBG "Enable the material debugger" ON)
+else()
+    option(FILAMENT_ENABLE_MATDBG "Enable the material debugger" OFF)
 endif()
 
 # ==================================================================================================
@@ -422,20 +483,20 @@ endif()
 # "bluevk" and "samples" targets.
 # ==================================================================================================
 
-if (FILAMENT_SUPPORTS_VULKAN AND APPLE)
+if (FILAMENT_USE_SWIFTSHADER)
+    if (NOT FILAMENT_SUPPORTS_VULKAN)
+        message(ERROR "SwiftShader is only useful when Vulkan is enabled.")
+    endif()
+    find_library(SWIFTSHADER_VK NAMES vk_swiftshader HINTS "$ENV{SWIFTSHADER_LD_LIBRARY_PATH}")
+    message(STATUS "Found SwiftShader VK library in: ${SWIFTSHADER_VK}.")
+    add_definitions(-DFILAMENT_VKLIBRARY_PATH=\"${SWIFTSHADER_VK}\")
+elseif (FILAMENT_SUPPORTS_VULKAN AND APPLE)
     find_library(Vulkan_LIBRARY NAMES vulkan HINTS "$ENV{VULKAN_SDK}/lib" "$ENV{VULKAN_SDK}/macOS/lib")
     if (Vulkan_LIBRARY)
         set(Vulkan_FOUND ON)
         message(STATUS "Found Vulkan library in SDK: ${Vulkan_LIBRARY}.")
         add_definitions(-DFILAMENT_VKLIBRARY_PATH=\"${Vulkan_LIBRARY}\")
     endif()
-endif()
-
-if (FILAMENT_USE_SWIFTSHADER)
-    find_library(SWIFTSHADER_EGL NAMES EGL HINTS "$ENV{SWIFTSHADER_LD_LIBRARY_PATH}")
-    find_library(SWIFTSHADER_GLES NAMES GLESv3 GLESv2 HINTS "$ENV{SWIFTSHADER_LD_LIBRARY_PATH}")
-    message(STATUS "Found SwiftShader EGL library in: ${SWIFTSHADER_EGL}.")
-    message(STATUS "Found SwiftShader GLES library in: ${SWIFTSHADER_GLES}.")
 endif()
 
 # ==================================================================================================
@@ -503,7 +564,7 @@ add_subdirectory(${EXTERNAL}/draco/tnt)
 add_subdirectory(${EXTERNAL}/stb/tnt)
 add_subdirectory(${EXTERNAL}/getopt)
 
-if (FILAMENT_BUILD_FILAMAT)
+if (FILAMENT_BUILD_FILAMAT OR IS_HOST_PLATFORM)
     # spirv-tools must come before filamat, as filamat relies on the presence of the
     # spirv-tools_SOURCE_DIR variable.
     add_subdirectory(${EXTERNAL}/spirv-tools)
@@ -512,8 +573,10 @@ if (FILAMENT_BUILD_FILAMAT)
     add_subdirectory(${LIBRARIES}/filamat)
 
     # the material debugger requires filamat
-    add_subdirectory(${EXTERNAL}/civetweb/tnt)
-    add_subdirectory(${LIBRARIES}/matdbg)
+    if (FILAMENT_ENABLE_MATDBG OR IS_HOST_PLATFORM)
+        add_subdirectory(${EXTERNAL}/civetweb/tnt)
+        add_subdirectory(${LIBRARIES}/matdbg)
+    endif()
 endif()
 
 if (FILAMENT_SUPPORTS_VULKAN)
@@ -530,15 +593,10 @@ set(FILAMENT_SAMPLES_BINARY_DIR ${PROJECT_BINARY_DIR}/samples)
 if (WEBGL)
     add_subdirectory(web/filament-js)
     add_subdirectory(web/samples)
-
-    if (FILAMENT_GENERATE_JS_DOCS)
-        add_subdirectory(web/docs)
-    endif()
-
     add_subdirectory(${EXTERNAL}/imgui/tnt)
 endif()
 
-if (NOT ANDROID AND NOT WEBGL AND NOT IOS)
+if (IS_HOST_PLATFORM)
     add_subdirectory(${LIBRARIES}/bluegl)
     add_subdirectory(${LIBRARIES}/filamentapp)
     add_subdirectory(${LIBRARIES}/filagui)
@@ -557,7 +615,6 @@ if (NOT ANDROID AND NOT WEBGL AND NOT IOS)
     add_subdirectory(${EXTERNAL}/libpng/tnt)
     add_subdirectory(${EXTERNAL}/libsdl2/tnt)
     add_subdirectory(${EXTERNAL}/libz/tnt)
-    add_subdirectory(${EXTERNAL}/skylight/tnt)
     add_subdirectory(${EXTERNAL}/tinyexr/tnt)
 
     add_subdirectory(${TOOLS}/cmgen)
@@ -570,12 +627,7 @@ if (NOT ANDROID AND NOT WEBGL AND NOT IOS)
     add_subdirectory(${TOOLS}/normal-blending)
     add_subdirectory(${TOOLS}/resgen)
     add_subdirectory(${TOOLS}/roughness-prefilter)
-    add_subdirectory(${TOOLS}/skygen)
     add_subdirectory(${TOOLS}/specular-color)
-endif()
-
-if (FILAMENT_USE_SWIFTSHADER)
-    add_subdirectory(${EXTERNAL}/swiftshader/tnt)
 endif()
 
 # Generate exported executables for cross-compiled builds (Android, WebGL, and iOS)

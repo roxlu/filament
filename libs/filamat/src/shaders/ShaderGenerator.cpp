@@ -46,7 +46,8 @@ static const char* getShadingDefine(filament::Shading shading) noexcept {
 }
 
 static void generateMaterialDefines(utils::io::sstream& os, const CodeGenerator& cg,
-        MaterialBuilder::PropertyList const properties) noexcept {
+        MaterialBuilder::PropertyList const properties,
+        const MaterialBuilder::PreprocessorDefineList& defines) noexcept {
     for (size_t i = 0; i < MaterialBuilder::MATERIAL_PROPERTIES_COUNT; i++) {
         cg.generateMaterialProperty(os, static_cast<MaterialBuilder::Property>(i), properties[i]);
     }
@@ -57,6 +58,11 @@ static void generateMaterialDefines(utils::io::sstream& os, const CodeGenerator&
             properties[static_cast<int>(MaterialBuilder::Property::BENT_NORMAL)]        ||
             properties[static_cast<int>(MaterialBuilder::Property::CLEAR_COAT_NORMAL)];
     cg.generateDefine(os, "MATERIAL_NEEDS_TBN", hasTBN);
+
+    // Additional, user-provided defines.
+    for (const auto& define : defines) {
+        cg.generateDefine(os, define.name.c_str(), define.value.c_str());
+    }
 }
 
 static void generateVertexDomain(const CodeGenerator& cg, utils::io::sstream& vs,
@@ -110,8 +116,7 @@ static void appendShader(utils::io::sstream& ss,
         const utils::CString& shader, size_t lineOffset) noexcept {
     if (!shader.empty()) {
         size_t lines = countLines(ss.c_str());
-        ss << "#line " << lineOffset;
-        if (shader[0] != '\n') ss << "\n";
+        ss << "#line " << lineOffset + 1 << '\n';
         ss << shader.c_str();
         if (shader[shader.size() - 1] != '\n') {
             ss << "\n";
@@ -125,17 +130,21 @@ static void appendShader(utils::io::sstream& ss,
 ShaderGenerator::ShaderGenerator(
         MaterialBuilder::PropertyList const& properties,
         MaterialBuilder::VariableList const& variables,
+        MaterialBuilder::OutputList const& outputs,
+        MaterialBuilder::PreprocessorDefineList const& defines,
         utils::CString const& materialCode, size_t lineOffset,
         utils::CString const& materialVertexCode, size_t vertexLineOffset,
         MaterialBuilder::MaterialDomain materialDomain) noexcept {
     std::copy(std::begin(properties), std::end(properties), std::begin(mProperties));
     std::copy(std::begin(variables), std::end(variables), std::begin(mVariables));
+    std::copy(std::begin(outputs), std::end(outputs), std::back_inserter(mOutputs));
 
     mMaterialCode = materialCode;
     mMaterialVertexCode = materialVertexCode;
     mMaterialLineOffset = lineOffset;
     mMaterialVertexLineOffset = vertexLineOffset;
     mMaterialDomain = materialDomain;
+    mDefines = defines;
 
     if (mMaterialCode.empty()) {
         if (mMaterialDomain == MaterialBuilder::MaterialDomain::SURFACE) {
@@ -180,11 +189,13 @@ std::string ShaderGenerator::createVertexProgram(filament::backend::ShaderModel 
 
     bool litVariants = lit || material.hasShadowMultiplier;
     cg.generateDefine(vs, "HAS_DIRECTIONAL_LIGHTING", litVariants && variant.hasDirectionalLighting());
+    cg.generateDefine(vs, "HAS_DYNAMIC_LIGHTING", litVariants && variant.hasDynamicLighting());
     cg.generateDefine(vs, "HAS_SHADOWING", litVariants && variant.hasShadowReceiver());
     cg.generateDefine(vs, "HAS_SHADOW_MULTIPLIER", material.hasShadowMultiplier);
     cg.generateDefine(vs, "HAS_SKINNING_OR_MORPHING", variant.hasSkinningOrMorphing());
+    cg.generateDefine(vs, "HAS_VSM", variant.hasVsm());
     cg.generateDefine(vs, getShadingDefine(material.shading), true);
-    generateMaterialDefines(vs, cg, mProperties);
+    generateMaterialDefines(vs, cg, mProperties, mDefines);
 
     AttributeBitset attributes = material.requiredAttributes;
     if (variant.hasSkinningOrMorphing()) {
@@ -238,8 +249,8 @@ std::string ShaderGenerator::createVertexProgram(filament::backend::ShaderModel 
     cg.generateCommonMaterial(vs, ShaderType::VERTEX);
 
     if (variant.isDepthPass() &&
-        (material.blendingMode != BlendingMode::MASKED) &&
-        !hasCustomDepthShader()) {
+            (material.blendingMode != BlendingMode::MASKED) &&
+            !hasCustomDepthShader()) {
         // these variants are special and are treated as DEPTH variants. Filament will never
         // request that variant for the color pass.
         cg.generateDepthShaderMain(vs, ShaderType::VERTEX);
@@ -339,6 +350,7 @@ std::string ShaderGenerator::createFragmentProgram(filament::backend::ShaderMode
     cg.generateDefine(fs, "HAS_SHADOWING", litVariants && variant.hasShadowReceiver());
     cg.generateDefine(fs, "HAS_SHADOW_MULTIPLIER", material.hasShadowMultiplier);
     cg.generateDefine(fs, "HAS_FOG", variant.hasFog());
+    cg.generateDefine(fs, "HAS_VSM", variant.hasVsm());
 
     // material defines
     cg.generateDefine(fs, "MATERIAL_HAS_DOUBLE_SIDED_CAPABILITY", material.hasDoubleSidedCapability);
@@ -387,7 +399,7 @@ std::string ShaderGenerator::createFragmentProgram(filament::backend::ShaderMode
             break;
     }
     cg.generateDefine(fs, getShadingDefine(material.shading), true);
-    generateMaterialDefines(fs, cg, mProperties);
+    generateMaterialDefines(fs, cg, mProperties, mDefines);
 
     cg.generateShaderInputs(fs, ShaderType::FRAGMENT, material.requiredAttributes, interpolation);
 
@@ -409,7 +421,7 @@ std::string ShaderGenerator::createFragmentProgram(filament::backend::ShaderMode
     cg.generateSeparator(fs);
     cg.generateSamplers(fs,
             material.samplerBindings.getBlockOffset(BindingPoints::PER_VIEW),
-            SibGenerator::getPerViewSib());
+            SibGenerator::getPerViewSib(variantKey));
     cg.generateSamplers(fs,
             material.samplerBindings.getBlockOffset(BindingPoints::PER_MATERIAL_INSTANCE),
             material.sib);
@@ -525,6 +537,19 @@ std::string ShaderGenerator::createPostProcessFragmentProgram(
 
     cg.generateCommon(fs, ShaderType::FRAGMENT);
     cg.generatePostProcessGetters(fs, ShaderType::FRAGMENT);
+
+    // Generate post-process outputs.
+    size_t outputIndex = 0;
+    for (const auto& output : mOutputs) {
+        if (output.target == MaterialBuilder::OutputTarget::COLOR) {
+            cg.generateOutput(fs, ShaderType::FRAGMENT, output.name, outputIndex++,
+                    output.qualifier, output.type);
+        }
+        if (output.target == MaterialBuilder::OutputTarget::DEPTH) {
+            cg.generateDefine(fs, "FRAG_OUTPUT_DEPTH", 1u);
+        }
+    }
+
     cg.generatePostProcessInputs(fs, ShaderType::FRAGMENT);
 
     appendShader(fs, mMaterialCode, mMaterialLineOffset);

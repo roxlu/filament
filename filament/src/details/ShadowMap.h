@@ -71,12 +71,15 @@ public:
 
         Aabb wsShadowCastersVolume;
         Aabb wsShadowReceiversVolume;
+
+        // Position of the directional light in world space.
+        math::float3 wsLightPosition;
     };
 
     // Call once per frame to populate the CascadeParameters struct, then pass to update().
     // This computes values constant across all cascades.
     static void computeSceneCascadeParams(const FScene::LightSoa& lightData, size_t index,
-            FScene const* scene, filament::CameraInfo const& camera, uint8_t visibleLayers,
+            FView const& view, filament::CameraInfo const& camera, uint8_t visibleLayers,
             CascadeParameters& cascadeParams);
 
     // Call once per frame if the light, scene (or visible layers) or camera changes.
@@ -85,9 +88,8 @@ public:
             filament::CameraInfo const& camera, uint8_t visibleLayers,
             ShadowMapLayout layout, const CascadeParameters& cascadeParams) noexcept;
 
-    void render(backend::DriverApi& driver, backend::Handle<backend::HwRenderTarget> rt,
-            filament::Viewport const& viewport, utils::Range<uint32_t> const& range,
-            RenderPass& pass, FView& view) noexcept;
+    void render(backend::DriverApi& driver, utils::Range<uint32_t> const& range, RenderPass& pass,
+            FView& view) noexcept;
 
     // Do we have visible shadows. Valid after calling update().
     bool hasVisibleShadows() const noexcept { return mHasVisibleShadows; }
@@ -104,6 +106,8 @@ public:
 
     // use only for debugging
     FCamera const& getDebugCamera() const noexcept { return *mDebugCamera; }
+
+    backend::PolygonOffset getPolygonOffset() const noexcept { return mPolygonOffset; }
 
 private:
     struct CameraInfo {

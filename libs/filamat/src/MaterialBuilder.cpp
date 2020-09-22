@@ -132,6 +132,11 @@ MaterialBuilder& MaterialBuilder::name(const char* name) noexcept {
     return *this;
 }
 
+MaterialBuilder& MaterialBuilder::fileName(const char* fileName) noexcept {
+    mFileName = CString(fileName);
+    return *this;
+}
+
 MaterialBuilder& MaterialBuilder::material(const char* code, size_t line) noexcept {
     mMaterialCode.setUnresolved(CString(code));
     mMaterialCode.setLineOffset(line);
@@ -350,6 +355,11 @@ MaterialBuilder& MaterialBuilder::variantFilter(uint8_t variantFilter) noexcept 
     return *this;
 }
 
+MaterialBuilder& MaterialBuilder::shaderDefine(const char* name, const char* value) noexcept {
+    mDefines.emplace_back(name, value);
+    return *this;
+}
+
 bool MaterialBuilder::hasExternalSampler() const noexcept {
     for (size_t i = 0, c = mParameterCount; i < c; i++) {
         auto const& param = mParameters[i];
@@ -512,11 +522,23 @@ bool MaterialBuilder::checkLiteRequirements() noexcept {
     return true;
 }
 
-bool MaterialBuilder::ShaderCode::resolveIncludes(IncludeCallback callback) noexcept {
+bool MaterialBuilder::ShaderCode::resolveIncludes(IncludeCallback callback,
+        const utils::CString& fileName) noexcept {
     if (!mCode.empty()) {
-        if (!::filamat::resolveIncludes(utils::CString(""), mCode, callback)) {
+        ResolveOptions options {
+            .insertLineDirectives = true,
+            .insertLineDirectiveCheck = true
+        };
+        IncludeResult source {
+            .includeName = fileName,
+            .text = mCode,
+            .lineNumberOffset = getLineOffset(),
+            .name = utils::CString("")
+        };
+        if (!::filamat::resolveIncludes(source, callback, options)) {
             return false;
         }
+        mCode = source.text;
     }
 
     mIncludesResolved = true;
@@ -563,7 +585,7 @@ bool MaterialBuilder::generateShaders(const std::vector<Variant>& variants, Chun
     std::vector<uint32_t> spirv;
     std::string msl;
 
-    ShaderGenerator sg(mProperties, mVariables, mMaterialCode.getResolved(),
+    ShaderGenerator sg(mProperties, mVariables, mOutputs, mDefines, mMaterialCode.getResolved(),
             mMaterialCode.getLineOffset(), mMaterialVertexCode.getResolved(),
             mMaterialVertexCode.getLineOffset(), mMaterialDomain);
 
@@ -600,14 +622,25 @@ bool MaterialBuilder::generateShaders(const std::vector<Variant>& variants, Chun
             metalEntry.variant = v.variant;
 
             // Generate raw shader code.
+            // The quotes in Google-style line directives cause problems with certain drivers. These
+            // directives are optimized away when using the full filamat, so down below we
+            // explicitly remove them when using filamat lite.
             std::string shader;
             if (v.stage == filament::backend::ShaderType::VERTEX) {
                 shader = sg.createVertexProgram(
                         shaderModel, targetApi, targetLanguage, info, v.variant,
                         mInterpolation, mVertexDomain);
+#ifdef FILAMAT_LITE
+                GLSLToolsLite glslTools;
+                glslTools.removeGoogleLineDirectives(shader);
+#endif
             } else if (v.stage == filament::backend::ShaderType::FRAGMENT) {
                 shader = sg.createFragmentProgram(
                         shaderModel, targetApi, targetLanguage, info, v.variant, mInterpolation);
+#ifdef FILAMAT_LITE
+                GLSLToolsLite glslTools;
+                glslTools.removeGoogleLineDirectives(shader);
+#endif
             }
 
 #ifndef FILAMAT_LITE
@@ -692,6 +725,38 @@ bool MaterialBuilder::generateShaders(const std::vector<Variant>& variants, Chun
     return true;
 }
 
+MaterialBuilder& MaterialBuilder::output(VariableQualifier qualifier, OutputTarget target,
+        OutputType type, const char* name) noexcept {
+
+    ASSERT_PRECONDITION(target != OutputTarget::DEPTH || type == OutputType::FLOAT,
+            "Depth outputs must be of type FLOAT.");
+    ASSERT_PRECONDITION(target != OutputTarget::DEPTH || qualifier == VariableQualifier::OUT,
+            "Depth outputs must use OUT qualifier.");
+
+    // Unconditionally add this output, then we'll check if we've maxed on on any particular target.
+    mOutputs.emplace_back(name, qualifier, target, type);
+
+    uint8_t colorOutputCount = 0;
+    uint8_t depthOutputCount = 0;
+    for (const auto& output : mOutputs) {
+        if (output.target == OutputTarget::COLOR) {
+            colorOutputCount++;
+        }
+        if (output.target == OutputTarget::DEPTH) {
+            depthOutputCount++;
+        }
+    }
+
+    ASSERT_PRECONDITION(colorOutputCount <= MAX_COLOR_OUTPUT,
+            "A maximum of %d COLOR outputs is allowed.", MAX_COLOR_OUTPUT);
+    ASSERT_PRECONDITION(depthOutputCount <= MAX_DEPTH_OUTPUT,
+            "A maximum of %d DEPTH output is allowed.", MAX_DEPTH_OUTPUT);
+
+    assert(mOutputs.size() <= MAX_COLOR_OUTPUT + MAX_DEPTH_OUTPUT);
+
+    return *this;
+}
+
 MaterialBuilder& MaterialBuilder::enableFramebufferFetch() noexcept {
     // This API is temporary, it is used to enable EXT_framebuffer_fetch for GLSL shaders,
     // this is used sparingly by filament's post-processing stage.
@@ -707,9 +772,14 @@ Package MaterialBuilder::build() noexcept {
         return Package::invalidPackage();
     }
 
+    // Add a default color output.
+    if (mMaterialDomain == MaterialDomain::POST_PROCESS && mOutputs.empty()) {
+        output(VariableQualifier::OUT, OutputTarget::COLOR, OutputType::FLOAT4, "color");
+    }
+
     // Resolve all the #include directives within user code.
-    if (!mMaterialCode.resolveIncludes(mIncludeCallback) ||
-        !mMaterialVertexCode.resolveIncludes(mIncludeCallback)) {
+    if (!mMaterialCode.resolveIncludes(mIncludeCallback, mFileName) ||
+        !mMaterialVertexCode.resolveIncludes(mIncludeCallback, mFileName)) {
         return Package::invalidPackage();
     }
 
@@ -754,7 +824,7 @@ Package MaterialBuilder::build() noexcept {
 
 const std::string MaterialBuilder::peek(filament::backend::ShaderType type,
         const CodeGenParams& params, const PropertyList& properties) noexcept {
-    ShaderGenerator sg(properties, mVariables, mMaterialCode.getResolved(),
+    ShaderGenerator sg(properties, mVariables, mOutputs, mDefines, mMaterialCode.getResolved(),
             mMaterialCode.getLineOffset(), mMaterialVertexCode.getResolved(),
             mMaterialVertexCode.getLineOffset(), mMaterialDomain);
 

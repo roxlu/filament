@@ -59,6 +59,21 @@ enum class Backend : uint8_t {
     NOOP = 4,     //!< Selects the no-op driver for testing purposes.
 };
 
+static constexpr const char* backendToString(backend::Backend backend) {
+    switch (backend) {
+        case backend::Backend::NOOP:
+            return "Noop";
+        case backend::Backend::OPENGL:
+            return "OpenGL";
+        case backend::Backend::VULKAN:
+            return "Vulkan";
+        case backend::Backend::METAL:
+            return "Metal";
+        default:
+            return "Unknown";
+    }
+}
+
 /**
  * Bitmask for selecting render buffers
  */
@@ -104,6 +119,14 @@ struct Viewport {
     int32_t right() const noexcept { return left + width; }
     //! get the top coordinate in window space of the viewport
     int32_t top() const noexcept { return bottom + height; }
+};
+
+/**
+ * Specifies the mapping of the near and far clipping plane to window coordinates.
+ */
+struct DepthRange {
+    float near = 0.0f;    //!< mapping of the near plane to window coordinates.
+    float far = 1.0f;     //!< mapping of the far plane to window coordinates.
 };
 
 /**
@@ -268,7 +291,8 @@ enum class PixelDataType : uint8_t {
     FLOAT,                //!< float (32-bits float)
     COMPRESSED,           //!< compressed pixels, @see CompressedPixelDataType
     UINT_10F_11F_11F_REV, //!< three low precision floating-point numbers
-    USHORT_565            //!< unsigned int (16-bit), encodes 3 RGB channels
+    USHORT_565,           //!< unsigned int (16-bit), encodes 3 RGB channels
+    UINT_2_10_10_10_REV,  //!< unsigned normalized 10 bits RGB, 2 bits alpha
 };
 
 //! Compressed pixel data types
@@ -475,6 +499,7 @@ enum class TextureUsage : uint8_t {
     STENCIL_ATTACHMENT  = 0x4,                      //!< Texture can be used as a stencil attachment
     UPLOADABLE          = 0x8,                      //!< Data can be uploaded into this texture (default)
     SAMPLEABLE          = 0x10,                     //!< Texture can be sampled (default)
+    SUBPASS_INPUT       = 0x20,                     //!< Texture can be used as a subpass input
     DEFAULT             = UPLOADABLE | SAMPLEABLE   //!< Default texture usage
 };
 
@@ -487,6 +512,20 @@ enum class TextureSwizzle {
     CHANNEL_2,
     CHANNEL_3
 };
+
+//! returns whether this format a depth format
+static constexpr bool isDepthFormat(TextureFormat format) noexcept {
+    switch (format) {
+        case TextureFormat::DEPTH32F:
+        case TextureFormat::DEPTH24:
+        case TextureFormat::DEPTH16:
+        case TextureFormat::DEPTH32F_STENCIL8:
+        case TextureFormat::DEPTH24_STENCIL8:
+            return true;
+        default:
+            return false;
+    }
+}
 
 //! returns whether this format a compressed format
 static constexpr bool isCompressedFormat(TextureFormat format) noexcept {
@@ -719,8 +758,7 @@ struct RasterState {
 
     // note: clang reduces this entire function to a simple load/mask/compare
     bool hasBlending() const noexcept {
-        // there could be other cases where blending would end-up being disabled,
-        // but this is common and easy to check
+        // This is used to decide if blending needs to be enabled in the h/w
         return !(blendEquationRGB == BlendEquation::ADD &&
                  blendEquationAlpha == BlendEquation::ADD &&
                  blendFunctionSrcRGB == BlendFunction::ONE &&
@@ -812,18 +850,26 @@ struct RenderPassParams {
     RenderPassFlags flags{};    //!< operations performed on the buffers for this pass
 
     Viewport viewport{};        //!< viewport for this pass
+    DepthRange depthRange{};    //!< depth range for this pass
 
     //! Color to use to clear the COLOR buffer. RenderPassFlags::clear must be set.
     filament::math::float4 clearColor = {};
 
     //! Depth value to clear the depth buffer with
-    double clearDepth = 1.0;
+    double clearDepth = 0.0;
 
     //! Stencil value to clear the stencil buffer with
     uint32_t clearStencil = 0;
 
-    //! reserved, must be zero
-    uint32_t reserved1 = 0;
+    /**
+     * The subpass mask specifies which color attachments are designated for read-back in the second
+     * subpass. If this is zero, the render pass has only one subpass. The least significant bit
+     * specifies that the first color attachment in the render target is a subpass input.
+     *
+     * For now only 2 subpasses are supported, so only the lower 4 bits are used, one for each color
+     * attachment (see MRT::TARGET_COUNT).
+     */
+    uint32_t subpassMask = 0;
 };
 
 struct PolygonOffset {

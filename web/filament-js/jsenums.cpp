@@ -15,6 +15,7 @@
  */
 
 #include <filament/Camera.h>
+#include <filament/ColorGrading.h>
 #include <filament/Color.h>
 #include <filament/Frustum.h>
 #include <filament/IndexBuffer.h>
@@ -135,13 +136,28 @@ enum_<View::AntiAliasing>("View$AntiAliasing")
     .value("NONE", View::AntiAliasing::NONE)
     .value("FXAA", View::AntiAliasing::FXAA);
 
+enum_<Camera::Fov>("Camera$Fov")
+    .value("VERTICAL", Camera::Fov::VERTICAL)
+    .value("HORIZONTAL", Camera::Fov::HORIZONTAL);
+
 enum_<Camera::Projection>("Camera$Projection")
     .value("PERSPECTIVE", Camera::Projection::PERSPECTIVE)
     .value("ORTHO", Camera::Projection::ORTHO);
 
-enum_<Camera::Fov>("Camera$Fov")
-    .value("VERTICAL", Camera::Fov::VERTICAL)
-    .value("HORIZONTAL", Camera::Fov::HORIZONTAL);
+enum_<ColorGrading::QualityLevel>("ColorGrading$QualityLevel")
+    .value("LOW", ColorGrading::QualityLevel::LOW)
+    .value("MEDIUM", ColorGrading::QualityLevel::MEDIUM)
+    .value("HIGH", ColorGrading::QualityLevel::HIGH)
+    .value("ULTRA", ColorGrading::QualityLevel::ULTRA);
+
+enum_<ColorGrading::ToneMapping>("ColorGrading$ToneMapping")
+    .value("LINEAR", ColorGrading::ToneMapping::LINEAR)
+    .value("ACES_LEGACY", ColorGrading::ToneMapping::ACES_LEGACY)
+    .value("ACES", ColorGrading::ToneMapping::ACES)
+    .value("FILMIC", ColorGrading::ToneMapping::FILMIC)
+    .value("UCHIMURA", ColorGrading::ToneMapping::UCHIMURA)
+    .value("REINHARD", ColorGrading::ToneMapping::REINHARD)
+    .value("DISPLAY_RANGE", ColorGrading::ToneMapping::DISPLAY_RANGE);
 
 enum_<Frustum::Plane>("Frustum$Plane")
     .value("LEFT", Frustum::Plane::LEFT)
@@ -261,7 +277,8 @@ enum_<Texture::Usage>("Texture$Usage") // aka backend::TextureUsage
     .value("DEPTH_ATTACHMENT", Texture::Usage::DEPTH_ATTACHMENT)
     .value("STENCIL_ATTACHMENT", Texture::Usage::STENCIL_ATTACHMENT)
     .value("UPLOADABLE", Texture::Usage::UPLOADABLE)
-    .value("SAMPLEABLE", Texture::Usage::SAMPLEABLE);
+    .value("SAMPLEABLE", Texture::Usage::SAMPLEABLE)
+    .value("SUBPASS_INPUT", Texture::Usage::SUBPASS_INPUT);
 
 enum_<Texture::CubemapFace>("Texture$CubemapFace") // aka backend::TextureCubemapFace
     .value("POSITIVE_X", Texture::CubemapFace::POSITIVE_X)

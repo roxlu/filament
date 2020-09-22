@@ -32,43 +32,43 @@ struct VulkanProgram : public HwProgram {
     Program::SamplerGroupInfo samplerGroupInfo;
 };
 
-struct VulkanTexture;
-
 // The render target bundles together a set of attachments, each of which can have one of the
 // following ownership semantics:
 //
-// - The attachment's VkImage is shared and the owner is VulkanSwapChain (mOffScreen = false).
-// - The attachment's VkImage is shared and the owner is VulkanTexture   (mOffScreen = true).
+// - The attachment's VkImage is shared and the owner is VulkanSwapChain (mOffscreen = false).
+// - The attachment's VkImage is shared and the owner is VulkanTexture   (mOffscreen = true).
 //
 // We use private inheritance to shield clients from the width / height fields in HwRenderTarget,
 // which are not representative when this is the default render target.
 struct VulkanRenderTarget : private HwRenderTarget {
-
     // Creates an offscreen render target.
-    VulkanRenderTarget(VulkanContext& context, uint32_t w, uint32_t h, TargetBufferInfo colorInfo,
-            VulkanTexture* color, TargetBufferInfo depthInfo, VulkanTexture* depth);
+    VulkanRenderTarget(VulkanContext& context, uint32_t width, uint32_t height, uint8_t samples,
+            VulkanAttachment color[MRT::TARGET_COUNT], VulkanAttachment depthStencil[2],
+            VulkanStagePool& stagePool);
 
     // Creates a special "default" render target (i.e. associated with the swap chain)
-    explicit VulkanRenderTarget(VulkanContext& context) : HwRenderTarget(0, 0), mContext(context),
-            mOffscreen(false), mColorLevel(0), mDepthLevel(0) {}
+    explicit VulkanRenderTarget(VulkanContext& context);
 
     ~VulkanRenderTarget();
 
-    bool isOffscreen() const { return mOffscreen; }
     void transformClientRectToPlatform(VkRect2D* bounds) const;
     void transformClientRectToPlatform(VkViewport* bounds) const;
     VkExtent2D getExtent() const;
-    VulkanAttachment getColor() const;
+    VulkanAttachment getColor(int target) const;
+    VulkanAttachment getMsaaColor(int target) const;
     VulkanAttachment getDepth() const;
-    uint32_t getColorLevel() const { return mColorLevel; }
-    uint32_t getDepthLevel() const { return mDepthLevel; }
+    VulkanAttachment getMsaaDepth() const;
+    int getColorTargetCount() const;
+    bool invalidate();
+    uint8_t getSamples() const { return mSamples; }
 private:
-    VulkanAttachment mColor = {};
+    VulkanAttachment mColor[MRT::TARGET_COUNT] = {};
     VulkanAttachment mDepth = {};
     VulkanContext& mContext;
-    bool mOffscreen;
-    uint32_t mColorLevel;
-    uint32_t mDepthLevel;
+    const bool mOffscreen;
+    const uint8_t mSamples;
+    VulkanAttachment mMsaaAttachments[MRT::TARGET_COUNT] = {};
+    VulkanAttachment mMsaaDepthAttachment = {};
 };
 
 struct VulkanSwapChain : public HwSwapChain {
@@ -121,11 +121,14 @@ struct VulkanTexture : public HwTexture {
     void updateCubeImage(const PixelBufferDescriptor& data, const FaceOffsets& faceOffsets,
             int miplevel);
 
+    // Gets or creates a cached image view for a single miplevel and array layer.
+    VkImageView getImageView(int level, int layer, VkImageAspectFlags aspect);
+
     // Issues a barrier that transforms the layout of the image, e.g. from a CPU-writeable
     // layout to a GPU-readable layout.
     static void transitionImageLayout(VkCommandBuffer cmdbuffer, VkImage image,
             VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t miplevel,
-            uint32_t layers, uint32_t levels = 1);
+            uint32_t layers, uint32_t levels, VkImageAspectFlags aspect);
 
     VkFormat vkformat;
     VkImageView imageView = VK_NULL_HANDLE;
@@ -139,6 +142,14 @@ private:
             uint32_t width, uint32_t height, uint32_t depth,
             FaceOffsets const* faceOffsets, uint32_t miplevel);
 
+    struct ImageViewCacheEntry {
+        int level;
+        int layer;
+        VkImageView view;
+    };
+
+    std::vector<ImageViewCacheEntry> mImageViews;
+    VkImageAspectFlags mAspect;
     VulkanContext& mContext;
     VulkanStagePool& mStagePool;
 };
@@ -175,7 +186,7 @@ struct VulkanTimerQuery : public HwTimerQuery {
     uint32_t startingQueryIndex;
     uint32_t stoppingQueryIndex;
     VulkanContext& mContext;
-    std::atomic<bool> ready;
+    std::atomic<VulkanCommandBuffer*> cmdbuffer;
 };
 
 } // namespace filament

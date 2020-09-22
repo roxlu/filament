@@ -69,6 +69,9 @@ struct PerViewUib { // NOLINT(cppcoreguidelines-pro-type-member-init)
 
     filament::math::float4 sun; // cos(sunAngle), sin(sunAngle), 1/(sunAngle*HALO_SIZE-sunAngle), HALO_EXP
 
+    filament::math::float3 lightPosition;
+    uint32_t padding;
+
     filament::math::float3 lightDirection;
     uint32_t fParamsX; // stride-x
 
@@ -117,13 +120,16 @@ struct PerViewUib { // NOLINT(cppcoreguidelines-pro-type-member-init)
     // bit 8-11: cascade has visible shadows
     uint32_t cascades;
 
-    float aoSamplingQuality;     // 0: bilinear, !0: bilateral
+    float aoSamplingQualityAndEdgeDistance;     // 0: bilinear, !0: bilateral edge distance
     float aoReserved1;
     float aoReserved2;
     float aoReserved3;
 
+    math::float2 clipControl;
+    math::float2 padding1;
+
     // bring PerViewUib to 2 KiB
-    filament::math::float4 padding2[62];
+    filament::math::float4 padding2[60];
 };
 
 // 2 KiB == 128 float4s

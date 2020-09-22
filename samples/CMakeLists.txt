@@ -104,7 +104,7 @@ function(add_envmap SOURCE TARGET)
         COMMENT "Generating environment map ${target_envmap}")
 endfunction()
 
-add_envmap("third_party/environments/venetian_crossroads_2k.hdr" "venetian_crossroads_2k")
+add_envmap("third_party/environments/lightroom_14b.hdr" "default_env")
 
 # ==================================================================================================
 # Build suzanne resources
@@ -255,7 +255,7 @@ endif()
 # Copy the MoltenVK dylibs and JSON on MacOS
 # ==================================================================================================
 
-if (APPLE AND NOT Vulkan_LIBRARY)
+if (APPLE AND NOT Vulkan_LIBRARY AND NOT FILAMENT_USE_SWIFTSHADER)
     message(STATUS "No Vulkan SDK was found, using prebuilt MoltenVK.")
     set(MOLTENVK_DIR "../third_party/moltenvk")
     configure_file(
