@@ -624,7 +624,6 @@ void OpenGLDriver::createTextureR(Handle<HwTexture> th, SamplerType target, uint
             mPlatform.createExternalImageTexture(t);
         } else {
             glGenTextures(1, &t->gl.id);
-
             t->gl.internalFormat = getInternalFormat(format);
             assert_invariant(t->gl.internalFormat);
 
@@ -1174,6 +1173,7 @@ void OpenGLDriver::createStreamFromTextureIdR(Handle<HwStream> sh,
     s->streamType = StreamType::TEXTURE_ID;
     glGenTextures(GLStream::ROUND_ROBIN_TEXTURE_COUNT, s->user_thread.read);
     glGenTextures(GLStream::ROUND_ROBIN_TEXTURE_COUNT, s->user_thread.write);
+
     for (auto& info : s->user_thread.infos) {
         info.ets = mPlatform.createExternalTextureStorage();
     }
@@ -2673,6 +2673,11 @@ void OpenGLDriver::readStreamPixels(Handle<HwStream> sh,
         gl.bindFramebuffer(GL_FRAMEBUFFER, 0);
         scheduleDestroy(std::move(p));
     }
+}
+
+void OpenGLDriver::getTextureId(Handle<HwTexture> th, void* result) {
+  GLTexture* t = handle_cast<GLTexture*>(th);
+  *(uint32_t*)result= t->gl.id;
 }
 
 // ------------------------------------------------------------------------------------------------

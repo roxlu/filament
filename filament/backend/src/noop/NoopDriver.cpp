@@ -297,6 +297,10 @@ void NoopDriver::readStreamPixels(Handle<HwStream> sh, uint32_t x, uint32_t y, u
     scheduleDestroy(std::move(p));
 }
 
+void NoopDriver::getTextureId(Handle<HwTexture> th, void* result) {
+  printf("Get texture id in NoopDriver::getTextureId.\n");
+}
+  
 void NoopDriver::blit(TargetBufferFlags buffers,
         Handle<HwRenderTarget> dst, backend::Viewport dstRect,
         Handle<HwRenderTarget> src, backend::Viewport srcRect,
