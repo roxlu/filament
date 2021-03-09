@@ -1497,23 +1497,14 @@ void VulkanDriver::readStreamPixels(Handle<HwStream> sh, uint32_t x, uint32_t y,
     scheduleDestroy(std::move(p));
 }
 
-<<<<<<< HEAD
+void VulkanDriver::getTextureId(Handle<HwTexture> th, void* result) {
+  printf("Get texture id in VulkanDriver::getTextureId.\n");
+}
+
 void VulkanDriver::blit(TargetBufferFlags buffers, Handle<HwRenderTarget> dst, Viewport dstRect,
         Handle<HwRenderTarget> src, Viewport srcRect, SamplerMagFilter filter) {
     VulkanRenderTarget* dstTarget = handle_cast<VulkanRenderTarget>(mHandleMap, dst);
     VulkanRenderTarget* srcTarget = handle_cast<VulkanRenderTarget>(mHandleMap, src);
-=======
-void VulkanDriver::getTextureId(Handle<HwTexture> th, void* result) {
-  printf("Get texture id in VulkanDriver::getTextureId.\n");
-}
-  
-void VulkanDriver::blit(TargetBufferFlags buffers,
-        Handle<HwRenderTarget> dst, backend::Viewport dstRect,
-        Handle<HwRenderTarget> src, backend::Viewport srcRect,
-        SamplerMagFilter filter) {
-    auto dstTarget = handle_cast<VulkanRenderTarget>(mHandleMap, dst);
-    auto srcTarget = handle_cast<VulkanRenderTarget>(mHandleMap, src);
->>>>>>> origin/rox/feature-get-texture-id
 
     VkFilter vkfilter = filter == SamplerMagFilter::NEAREST ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
 
